@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>shaders/background.vert</file>
+        <file>shaders/background.frag</file>
+        <file>shaders/stroke.vert</file>
+        <file>shaders/stroke.frag</file>
+        <file>shaders/present.vert</file>
+        <file>shaders/present.frag</file>
+    </qresource>
+</RCC>

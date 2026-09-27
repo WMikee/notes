@@ -15,4 +15,7 @@ void main() {
     acc += texture(uTex, vuv + vec2( 0.0,           uTexelSize.y));
     acc += texture(uTex, vuv + vec2( uTexelSize.x,  uTexelSize.y));
     frag = acc * (1.0 / 9.0);
+
+
+    frag.a = 1.0;
 }

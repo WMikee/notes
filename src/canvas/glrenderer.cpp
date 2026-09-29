@@ -650,6 +650,41 @@ void GLRenderer::present(const Frame& f)
     presentProg_->release();
 }
 
+static void drawCurveNodes(QPainter& p, const ShapeItem& sh, float zoom, const QPointF& offset,
+                           bool handles)
+{
+    if (sh.kind != ShapeKind::Curve || sh.nodes.empty()) return;
+    const auto toScreen = [zoom, &offset](const QPointF& w) {
+        return QPointF(w.x() * zoom + offset.x(), w.y() * zoom + offset.y());
+    };
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    if (handles) {
+        p.setPen(QPen(QColor(0x30, 0x90, 0xff, 170), 1.2));
+        p.setBrush(QColor(0x30, 0x90, 0xff));
+        for (int i = 0; i < int(sh.nodes.size()); ++i) {
+            const QPointF n = toScreen(curveNodeWorld(sh, i));
+            for (bool out : {false, true}) {
+                const QPointF h = toScreen(curveHandleWorld(sh, i, out));
+                if (h == n) continue;
+                p.setPen(QPen(QColor(0x30, 0x90, 0xff, 170), 1.2));
+                p.drawLine(n, h);
+                p.setPen(Qt::NoPen);
+                p.drawEllipse(h, 3.0, 3.0);
+            }
+        }
+    }
+
+    p.setPen(QPen(QColor(0xff, 0xff, 0xff), 1.5));
+    p.setBrush(QColor(0x30, 0x90, 0xff));
+    for (int i = 0; i < int(sh.nodes.size()); ++i)
+        p.drawEllipse(toScreen(curveNodeWorld(sh, i)), 4.0, 4.0);
+
+    p.restore();
+}
+
 void GLRenderer::paintOverlay(QPainter& p, const Frame& f)
 {
     const QPointF offset(f.cam.offset.x(), f.cam.offset.y());
@@ -663,6 +698,17 @@ void GLRenderer::paintOverlay(QPainter& p, const Frame& f)
         drawTextBox(p, t, f.cam.zoom, offset,
                     f.editingTextId == t.id, f.textCursor, kCaretColor,
                     f.editingTextId == t.id ? f.preeditStart : -1, f.preeditLen);
+
+    if (f.dragShape && f.dragShape->kind == ShapeKind::Curve)
+        drawCurveNodes(p, *f.dragShape, f.cam.zoom, offset, false);
+    if (f.curveEditId >= 0) {
+        for (const ShapeItem& sh : f.shapes) {
+            if (sh.id == f.curveEditId) {
+                drawCurveNodes(p, sh, f.cam.zoom, offset, true);
+                break;
+            }
+        }
+    }
 }
 
 }

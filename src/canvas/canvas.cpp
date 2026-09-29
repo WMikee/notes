@@ -66,8 +66,10 @@ Canvas::Canvas(QWidget* parent)
 void Canvas::setTool(ToolId t)
 {
     if (tool_ == t) return;
+    if (tool_ == ToolId::Curve) curveAbort();
     finishInput();
     tool_ = t;
+    if (t == ToolId::Curve) selTool_->clear(ctx());
     updateCursor();
 }
 
@@ -78,6 +80,7 @@ void Canvas::updateCursor()
     case ToolId::Highlighter: setCursor(pencilCursor()); break;
     case ToolId::Eraser: setCursor(pencilCursor()); break;
     case ToolId::Shape:  setCursor(pencilCursor()); break;
+    case ToolId::Curve:  setCursor(Qt::CrossCursor); break;
     case ToolId::Select: setCursor(Qt::ArrowCursor); break;
     case ToolId::Text:   setCursor(Qt::IBeamCursor); break;
     }
@@ -425,8 +428,19 @@ void Canvas::paintGL()
     f.current = &cur_;
     f.eraserTrail = &eraserTrail_;
     f.eraseNow = float(eraseClock_.elapsed()) / 1000.0f;
-    if (shapeDragging_) f.dragShape = &dragShape_;
-    if (!selTool_->selection().empty()) {
+    if (shapeDragging_ || (tool_ == ToolId::Curve && !curvePts_.empty()))
+        f.dragShape = &dragShape_;
+
+    f.curveEditId = -1;
+    const bool curveToolEditing = (tool_ == ToolId::Curve && curveEditId_ >= 0);
+    if (curveToolEditing) {
+        f.curveEditId = curveEditId_;
+    } else if (tool_ == ToolId::Select && selTool_->selection().size() == 1) {
+        const ShapeItem* sh = doc_.shapeById(selTool_->selection().front());
+        if (sh && sh->kind == ShapeKind::Curve) f.curveEditId = sh->id;
+    }
+
+    if (!selTool_->selection().empty() && !curveToolEditing) {
         f.selectionBox = selTool_->gizmoBox(c);
         f.selectionRot = float(selTool_->gizmoRot());
         f.hasSelection = true;
@@ -474,6 +488,7 @@ void Canvas::tabletEvent(QTabletEvent* e)
             else if (tool_ == ToolId::Eraser) beginErase(p);
             else if (tool_ == ToolId::Select) { stylusMode_ = Gesture::Select; selTool_->onPress({ p, 0.5f, (e->modifiers() & Qt::ShiftModifier) != 0 }, ctx()); }
             else if (tool_ == ToolId::Shape) beginShape(p);
+            else if (tool_ == ToolId::Curve) { stylusMode_ = Gesture::None; curvePress(p); }
             else { stylusMode_ = Gesture::None; textBegin(p); }
         }
         break;
@@ -506,6 +521,8 @@ void Canvas::tabletEvent(QTabletEvent* e)
             } else if (tool_ == ToolId::Shape) {
                 stylusMode_ = Gesture::Draw;
                 beginShape(p);
+            } else if (tool_ == ToolId::Curve) {
+                curveMove(p);
             } else {
                 stylusMode_ = Gesture::Draw;
                 if (tool_ == ToolId::Pencil || tool_ == ToolId::Highlighter) beginStroke(p, pressureValue(float(e->pressure())));
@@ -515,6 +532,7 @@ void Canvas::tabletEvent(QTabletEvent* e)
         break;
     case QEvent::TabletRelease:
         if (stylusMode_ == Gesture::Draw || stylusMode_ == Gesture::Select) finishInput();
+        if (tool_ == ToolId::Curve) curveRelease();
         penDown_ = false;
         stylusMode_ = Gesture::None;
         break;
@@ -534,6 +552,7 @@ void Canvas::mousePressEvent(QMouseEvent* e)
     if (tool_ == ToolId::Pencil || tool_ == ToolId::Highlighter) beginStroke(e->position(), 0.5f);
     else if (tool_ == ToolId::Eraser) beginErase(e->position());
     else if (tool_ == ToolId::Shape) beginShape(e->position());
+    else if (tool_ == ToolId::Curve) curvePress(e->position());
     else if (tool_ == ToolId::Text) { textEditJustStarted_ = true; textBegin(e->position()); }
     else selTool_->onPress({ e->position(), 0.5f, (e->modifiers() & Qt::ShiftModifier) != 0 }, ctx());
 }
@@ -550,6 +569,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* e)
     if (drawing_) addPoint(e->position(), 0.5f);
     else if (erasing_) eraseAt(e->position());
     else if (shapeDragging_) updateShape(e->position());
+    else if (tool_ == ToolId::Curve) curveMove(e->position());
     else if (selTool_->dragging())
         selTool_->onMove({ e->position(), 0.5f, (e->modifiers() & Qt::ShiftModifier) != 0 }, ctx());
 }
@@ -566,6 +586,10 @@ void Canvas::mouseReleaseEvent(QMouseEvent* e)
             return;
         }
     }
+    if (tool_ == ToolId::Curve) {
+        curveRelease();
+        return;
+    }
     finishInput();
 }
 
@@ -579,9 +603,9 @@ void Canvas::wheelEvent(QWheelEvent* e)
 
 bool Canvas::event(QEvent* e)
 {
-    if (e->type() == QEvent::ShortcutOverride && editingText_ >= 0) {
+    if (e->type() == QEvent::ShortcutOverride) {
         auto* ke = static_cast<QKeyEvent*>(e);
-        if (ke->modifiers() == Qt::NoModifier) {
+        if (editingText_ >= 0 && ke->modifiers() == Qt::NoModifier) {
             switch (ke->key()) {
             case Qt::Key_V:
             case Qt::Key_B:
@@ -589,11 +613,16 @@ bool Canvas::event(QEvent* e)
             case Qt::Key_E:
             case Qt::Key_T:
             case Qt::Key_F:
+            case Qt::Key_C:
                 e->accept();
                 return true;
             default:
                 break;
             }
+        } else if (tool_ == ToolId::Curve && !curvePts_.empty()
+                   && ke->key() == Qt::Key_Z && ke->modifiers() == Qt::ControlModifier) {
+            e->accept();
+            return true;
         }
     }
     return QOpenGLWidget::event(e);
@@ -617,10 +646,23 @@ void Canvas::keyPressEvent(QKeyEvent* e)
         return;
     }
     if (e->key() == Qt::Key_Delete) { deleteSelection(); return; }
+    if (tool_ == ToolId::Curve) {
+        if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) { curveFinish(); return; }
+        if (e->key() == Qt::Key_Escape) { curveCancel(); return; }
+    }
     if (e->modifiers() & Qt::ControlModifier) {
         if (e->key() == Qt::Key_C) { copy(); return; }
         if (e->key() == Qt::Key_X) { cut(); return; }
         if (e->key() == Qt::Key_V) { paste(); return; }
+        if (e->key() == Qt::Key_Z && tool_ == ToolId::Curve && !curvePts_.empty()) {
+            curvePts_.pop_back();
+            if (!curvePts_.empty())
+                curveRebuildDraft(false);
+            else
+                dragShape_ = ShapeItem{};
+            update();
+            return;
+        }
     }
     const bool mods = (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) != 0;
     if (e->key() == Qt::Key_Shift)
@@ -853,6 +895,153 @@ void Canvas::endShape()
     dragShape_.id = doc_.nextId();
     doc_.addShape(dragShape_);
     selTool_->setSelection({ dragShape_.id }, doc_);
+    update();
+}
+
+void Canvas::curveRebuildDraft(bool withPreview)
+{
+    std::vector<QPointF> pts = curvePts_;
+    if (withPreview && !pts.empty())
+        pts.push_back(curvePreview_);
+    if (pts.empty()) return;
+    dragShape_ = ShapeItem{};
+    curveBuildFromPoints(pts, dragShape_);
+    dragShape_.color = color_;
+    dragShape_.penWidth = shapePenWidth_;
+}
+
+int Canvas::curveCommitDraft()
+{
+    if (curvePts_.size() < 2) return -1;
+    curveRebuildDraft(false);
+    dragShape_.id = doc_.nextId();
+    doc_.addShape(dragShape_);
+    return dragShape_.id;
+}
+
+void Canvas::curvePress(const QPointF& screen)
+{
+    const QPointF w = cam_.toWorld(screen);
+    if (curvePts_.empty() && curveEditId_ >= 0) {
+        ShapeItem* sh = doc_.shapeById(curveEditId_);
+        if (sh && sh->kind == ShapeKind::Curve) {
+            const CurveHit hit = curveHit(*sh, w, 10.0 / cam_.zoom);
+            if (hit.part != CurvePart::None) {
+                curveDragging_ = true;
+                curveNode_ = hit.index;
+                curvePart_ = hit.part;
+                curveBefore_ = *sh;
+                curveMoved_ = false;
+                update();
+                return;
+            }
+        }
+        curveEditId_ = -1;
+    }
+    if (!curvePts_.empty()) {
+        const QPointF& last = curvePts_.back();
+        const double minWorld = 4.0 / std::max(cam_.zoom, 0.01f);
+        if (std::hypot(w.x() - last.x(), w.y() - last.y()) < minWorld)
+            return;
+    }
+    curvePts_.push_back(w);
+    curvePreview_ = w;
+    curveRebuildDraft(false);
+    update();
+}
+
+void Canvas::curveMove(const QPointF& screen)
+{
+    const QPointF w = cam_.toWorld(screen);
+    if (curveDragging_) {
+        ShapeItem* sh = doc_.shapeById(curveEditId_);
+        if (!sh) {
+            curveDragging_ = false;
+            return;
+        }
+        if (curvePart_ == CurvePart::Node)
+            curveMoveNode(*sh, curveNode_, w);
+        else
+            curveMoveHandle(*sh, curveNode_, curvePart_ == CurvePart::HandleOut, w);
+        curveMoved_ = true;
+        update();
+        return;
+    }
+    if (!curvePts_.empty()) {
+        curvePreview_ = w;
+        curveRebuildDraft(true);
+        update();
+    }
+}
+
+void Canvas::curveRelease()
+{
+    if (!curveDragging_) return;
+    curveDragging_ = false;
+    if (curveMoved_) {
+        ShapeItem* sh = doc_.shapeById(curveEditId_);
+        if (sh) doc_.commitShapeTransform({ curveBefore_ }, { *sh });
+    }
+    curveMoved_ = false;
+    update();
+}
+
+void Canvas::curveFinish()
+{
+    if (!curvePts_.empty()) {
+        const int id = curveCommitDraft();
+        if (id >= 0) {
+            selTool_->setSelection({ id }, doc_);
+            curveEditId_ = id;
+        }
+        curvePts_.clear();
+        curvePreview_ = QPointF();
+        dragShape_ = ShapeItem{};
+        update();
+        return;
+    }
+    if (curveEditId_ >= 0) {
+        curveEditId_ = -1;
+        update();
+    }
+}
+
+void Canvas::curveCancel()
+{
+    if (!curvePts_.empty()) {
+        curvePts_.clear();
+        curvePreview_ = QPointF();
+        dragShape_ = ShapeItem{};
+        update();
+        return;
+    }
+    if (curveEditId_ >= 0) {
+        curveEditId_ = -1;
+        update();
+    }
+}
+
+void Canvas::curveAbort()
+{
+    if (curveDragging_) {
+        curveDragging_ = false;
+        if (curveMoved_) {
+            ShapeItem* sh = doc_.shapeById(curveEditId_);
+            if (sh) doc_.commitShapeTransform({ curveBefore_ }, { *sh });
+        }
+        curveMoved_ = false;
+    }
+    if (!curvePts_.empty()) {
+        const int id = curveCommitDraft();
+        if (id >= 0)
+            selTool_->setSelection({ id }, doc_);
+        curvePts_.clear();
+        curvePreview_ = QPointF();
+        dragShape_ = ShapeItem{};
+    }
+    curveEditId_ = -1;
+    curveDragging_ = false;
+    curveMoved_ = false;
     update();
 }
 

@@ -9,7 +9,8 @@ namespace notes {
 
 namespace {
 constexpr quint32 kMagic = 0x4E4F4454;
-constexpr quint32 kVersion = 7;
+constexpr quint32 kVersion = 8;
+constexpr quint32 kVersion7 = 7;
 constexpr quint32 kVersion6 = 6;
 constexpr quint32 kVersion5 = 5;
 constexpr quint32 kVersion4 = 4;
@@ -45,6 +46,9 @@ void serializeShape(QDataStream& ds, const ShapeItem& sh)
     ds << sh.penWidth;
     ds << quint8(sh.kind);
     ds << sh.rot;
+    ds << quint32(sh.nodes.size());
+    for (const CurveNode& n : sh.nodes)
+        ds << n.pos << n.in << n.out;
 }
 
 bool deserializeShape(QDataStream& ds, ShapeItem& sh, quint32 version)
@@ -57,10 +61,18 @@ bool deserializeShape(QDataStream& ds, ShapeItem& sh, quint32 version)
     ds >> kind;
     sh.rot = 0.0;
     if (version >= 5) ds >> sh.rot;
+    if (version >= 8) {
+        quint32 nn = 0;
+        ds >> nn;
+        sh.nodes.resize(nn);
+        for (quint32 i = 0; i < nn; ++i)
+            ds >> sh.nodes[i].pos >> sh.nodes[i].in >> sh.nodes[i].out;
+    }
     switch (ShapeKind(kind)) {
     case ShapeKind::Rectangle:
     case ShapeKind::Triangle:
     case ShapeKind::Ellipse:
+    case ShapeKind::Curve:
         sh.kind = ShapeKind(kind);
         break;
     default:
@@ -184,7 +196,8 @@ bool deserializeDocument(const QByteArray& bytes, DocumentData& out)
     ds.setVersion(QDataStream::Qt_6_2);
     quint32 magic = 0, version = 0;
     ds >> magic >> version;
-    if (magic != kMagic || (version != kVersion && version != kVersion6 && version != kVersion5
+    if (magic != kMagic || (version != kVersion && version != kVersion7 && version != kVersion6
+        && version != kVersion5
         && version != kVersion4 && version != kVersion3 && version != kVersion2
         && version != kVersion1)
         || ds.status() != QDataStream::Ok)

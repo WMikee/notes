@@ -21,6 +21,7 @@ constexpr int kMaxSize = 48;
 int defaultSizeForTool(const QString& tool)
 {
     if (tool == QLatin1String("eraser")) return 7;
+    if (tool == QLatin1String("curve")) return 3;
     return 12;
 }
 }

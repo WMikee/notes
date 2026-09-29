@@ -8,6 +8,7 @@
         <file alias="dot.png">assets/dot.png</file>
         <file alias="text.png">assets/text.png</file>
         <file alias="rectangle.png">assets/rectangle.png</file>
+        <file alias="curve.png">assets/curve.png</file>
         <file alias="triangle.png">assets/triangle.png</file>
         <file alias="circle.png">assets/circle.png</file>
         <file alias="plus-thin.png">assets/plus-thin.png</file>

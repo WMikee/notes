@@ -37,6 +37,7 @@ void SelectTool::clear(ToolContext& ctx)
     selection_.clear();
     boxValid_ = false;
     boxRot_ = 0.0;
+    curveDragging_ = false;
     forgetSnapshots();
     emit gizmoCleared();
     ctx.repaint();
@@ -217,6 +218,25 @@ void SelectTool::onPress(const InputPoint& p, ToolContext& ctx)
     const QPointF w = ctx.cam.toWorld(p.pos);
 
 
+    if (selection_.size() == 1) {
+        ShapeItem* curve = ctx.doc.shapeById(selection_.front());
+        if (curve && curve->kind == ShapeKind::Curve) {
+            const CurveHit hit = curveHit(*curve, w, kHandleTolPx / ctx.cam.zoom);
+            if (hit.part != CurvePart::None) {
+                curveDragging_ = true;
+                curveNode_ = hit.index;
+                curvePart_ = hit.part;
+                handle_ = Handle::Move;
+                drag_ = true;
+                moved_ = false;
+                dragLastScreen_ = p.pos;
+                collectSnapshots(ctx.doc);
+                ctx.repaint();
+                return;
+            }
+        }
+    }
+
     if (!selection_.empty()) {
         const QRectF b = gizmoBox(ctx);
         if (!b.isNull()) {
@@ -304,6 +324,22 @@ void SelectTool::beginDrag(const QPointF& screen, ToolContext& ctx)
 
 void SelectTool::onMove(const InputPoint& p, ToolContext& ctx)
 {
+    if (curveDragging_) {
+        ShapeItem* curve = selection_.size() == 1
+            ? ctx.doc.shapeById(selection_.front()) : nullptr;
+        if (curve && curve->kind == ShapeKind::Curve) {
+            const QPointF w = ctx.cam.toWorld(p.pos);
+            if (curvePart_ == CurvePart::Node)
+                curveMoveNode(*curve, curveNode_, w);
+            else
+                curveMoveHandle(*curve, curveNode_, curvePart_ == CurvePart::HandleOut, w);
+            moved_ = true;
+            boxValid_ = false;
+            ctx.invalidate();
+            ctx.repaint();
+        }
+        return;
+    }
     if (handle_ == Handle::None) {
         marqueeRect_ = QRectF(marqueeAnchorWorld_, ctx.cam.toWorld(p.pos)).normalized();
         ctx.repaint();
@@ -332,6 +368,7 @@ void SelectTool::onRelease(const InputPoint& p, ToolContext& ctx)
     Q_UNUSED(p);
     const bool wasMarquee = (handle_ == Handle::None);
     drag_ = false;
+    curveDragging_ = false;
     if (wasMarquee) endMarquee(ctx);
     else commitDrag(ctx);
 }
@@ -340,6 +377,7 @@ void SelectTool::finish(ToolContext& ctx)
 {
     if (!drag_) return;
     drag_ = false;
+    curveDragging_ = false;
     if (handle_ == Handle::None) endMarquee(ctx);
     else commitDrag(ctx);
 }
@@ -559,6 +597,19 @@ void SelectTool::scale(const QPointF& w, bool shift, ToolContext& ctx)
     for (size_t i = 0; i < dragShapes_.size(); ++i) {
         ShapeItem* sh = dragShapes_[i];
         const ShapeItem& orig = beforeShapes_[i];
+        if (orig.kind == ShapeKind::Curve) {
+            sh->rect = QRectF(applyScale(orig.anchor()), orig.localRect().size());
+            sh->rot = orig.rot;
+            sh->nodes = orig.nodes;
+            for (CurveNode& n : sh->nodes) {
+                n.pos = QPointF(n.pos.x() * sx, n.pos.y() * sy);
+                n.in = QPointF(n.in.x() * sx, n.in.y() * sy);
+                n.out = QPointF(n.out.x() * sx, n.out.y() * sy);
+            }
+            curveNormalize(*sh);
+            sh->penWidth = orig.penWidth * k;
+            continue;
+        }
         const QSizeF os = orig.localRect().size();
         sh->rect = QRectF(applyScale(orig.anchor()),
                           QSizeF(os.width() * sx, os.height() * sy));

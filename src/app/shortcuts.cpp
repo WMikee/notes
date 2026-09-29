@@ -21,6 +21,7 @@ QKeySequence defaultShortcut(ActionId id)
     case ActionId::Eraser:      return QKeySequence(Qt::Key_E);
     case ActionId::Text:        return QKeySequence(Qt::Key_T);
     case ActionId::Shape:       return QKeySequence(Qt::Key_F);
+    case ActionId::Curve:       return QKeySequence(Qt::Key_C);
     }
     return {};
 }

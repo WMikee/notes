@@ -28,7 +28,7 @@ class Canvas : public QOpenGLWidget
 {
     Q_OBJECT
 public:
-    enum class ToolId { Pencil, Highlighter, Eraser, Select, Text, Shape };
+    enum class ToolId { Pencil, Highlighter, Eraser, Select, Text, Shape, Curve };
     enum class EraserMode { Full, Partial };
 
     explicit Canvas(QWidget* parent = nullptr);
@@ -97,6 +97,14 @@ private:
     void beginShape(const QPointF& p);
     void updateShape(const QPointF& p);
     void endShape();
+    void curvePress(const QPointF& screen);
+    void curveMove(const QPointF& screen);
+    void curveRelease();
+    void curveFinish();
+    void curveCancel();
+    void curveAbort();
+    void curveRebuildDraft(bool withPreview);
+    int curveCommitDraft();
     void finishInput();
     void imageMimeDataPaste(const QMimeData& mime);
 
@@ -155,6 +163,15 @@ private:
     bool shapeDragging_ = false;
     QPointF shapeAnchor_;
     ShapeItem dragShape_;
+
+    std::vector<QPointF> curvePts_;
+    QPointF curvePreview_;
+    bool curveDragging_ = false;
+    int curveNode_ = -1;
+    CurvePart curvePart_ = CurvePart::None;
+    bool curveMoved_ = false;
+    ShapeItem curveBefore_;
+    int curveEditId_ = -1;
 
     bool penDown_ = false;
     bool spaceDown_ = false;

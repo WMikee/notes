@@ -68,7 +68,8 @@ bool toolUsesSlider(const QString& toolId)
 
 bool toolUsesSizeChoice(const QString& toolId)
 {
-    return toolId == QLatin1String("text") || toolId == QLatin1String("shape");
+    return toolId == QLatin1String("text") || toolId == QLatin1String("shape")
+        || toolId == QLatin1String("curve");
 }
 
 bool toolUsesStabilizer(const QString& toolId)
@@ -87,7 +88,8 @@ bool toolUsesColor(const QString& toolId)
     return toolId == QLatin1String("pencil")
         || toolId == QLatin1String("highlighter")
         || toolId == QLatin1String("text")
-        || toolId == QLatin1String("shape");
+        || toolId == QLatin1String("shape")
+        || toolId == QLatin1String("curve");
 }
 
 struct SizeChoice
@@ -103,6 +105,8 @@ SizeChoice sizeChoiceForTool(const QString& toolId)
         return {6, 96, 12};
     if (toolId == QLatin1String("shape"))
         return {1, 24, 1};
+    if (toolId == QLatin1String("curve"))
+        return {1, 24, 3};
     return {};
 }
 
@@ -158,10 +162,12 @@ NotesWindow::NotesWindow()
         {QStringLiteral("eraser"), library_->savedSize(QStringLiteral("eraser"))},
         {QStringLiteral("text"), library_->savedSize(QStringLiteral("text"))},
         {QStringLiteral("shape"), library_->savedSize(QStringLiteral("shape"))},
+        {QStringLiteral("curve"), library_->savedSize(QStringLiteral("curve"))},
     };
 
     for (const QString& tool : {QStringLiteral("pencil"), QStringLiteral("highlighter"),
-                                QStringLiteral("text"), QStringLiteral("shape")}) {
+                                QStringLiteral("text"), QStringLiteral("shape"),
+                                QStringLiteral("curve")}) {
         const QString remembered = library_->savedColorForTool(tool);
         toolColors_.insert(tool, QColor(remembered.isEmpty() ? savedColor.name() : remembered));
     }
@@ -248,6 +254,8 @@ NotesWindow::NotesWindow()
     textAct->setCheckable(true);
     QAction* shapeAct = tools->addAction(QIcon(":/assets/rectangle.png"), "Figura");
     shapeAct->setCheckable(true);
+    QAction* curveAct = tools->addAction(QIcon(":/assets/curve.png"), "Curva");
+    curveAct->setCheckable(true);
 
     applyShortcut(pointerAct, ActionId::Pointer);
     applyShortcut(penAct, ActionId::Pencil);
@@ -255,10 +263,11 @@ NotesWindow::NotesWindow()
     applyShortcut(eraserAct, ActionId::Eraser);
     applyShortcut(textAct, ActionId::Text);
     applyShortcut(shapeAct, ActionId::Shape);
-    for (QAction* act : {pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct})
+    applyShortcut(curveAct, ActionId::Curve);
+    for (QAction* act : {pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct, curveAct})
         addAction(act);
 
-    const auto applyTool = [this, pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct](QAction* a) {
+    const auto applyTool = [this, pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct, curveAct](QAction* a) {
         Canvas::ToolId t = Canvas::ToolId::Select;
         QString id = QStringLiteral("pointer");
         if (a == pointerAct) {
@@ -284,6 +293,9 @@ NotesWindow::NotesWindow()
             id = QStringLiteral("shape");
             if (shapeButton_)
                 canvas_->setShapeKind(shapeKindForIcon(shapeButton_->activeIcon()));
+        } else if (a == curveAct) {
+            t = Canvas::ToolId::Curve;
+            id = QStringLiteral("curve");
         }
         canvas_->setTool(t);
         currentToolId_ = id;
@@ -350,6 +362,7 @@ NotesWindow::NotesWindow()
             canvas_->setShapeKind(shapeKindForIcon(active));
         });
     panelLayout->addWidget(shapeButton_);
+    panelLayout->addWidget(makeToolButton(curveAct));
 
     QAction* initialAction = pointerAct;
     if (savedTool == QStringLiteral("pencil")) initialAction = penAct;
@@ -357,6 +370,7 @@ NotesWindow::NotesWindow()
     else if (savedTool == QStringLiteral("eraser")) initialAction = eraserAct;
     else if (savedTool == QStringLiteral("text")) initialAction = textAct;
     else if (savedTool == QStringLiteral("shape")) initialAction = shapeAct;
+    else if (savedTool == QStringLiteral("curve")) initialAction = curveAct;
     initialAction->setChecked(true);
     applyTool(initialAction);
 
@@ -795,6 +809,8 @@ void NotesWindow::applyToolSizeToCanvas()
     else if (currentToolId_ == QLatin1String("text"))
         canvas_->setFontSize(v);
     else if (currentToolId_ == QLatin1String("shape"))
+        canvas_->setShapePenWidth(v);
+    else if (currentToolId_ == QLatin1String("curve"))
         canvas_->setShapePenWidth(v);
     else
         canvas_->setStrokeSize(v);

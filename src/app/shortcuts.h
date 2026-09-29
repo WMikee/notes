@@ -22,6 +22,7 @@ enum class ActionId
     Eraser,
     Text,
     Shape,
+    Curve,
 };
 
 QKeySequence defaultShortcut(ActionId id);

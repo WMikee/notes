@@ -79,6 +79,9 @@ private:
     std::vector<QPointF> scratchPts_;
     double appliedRot_ = 0.0;
     bool moved_ = false;
+    bool curveDragging_ = false;
+    int curveNode_ = -1;
+    CurvePart curvePart_ = CurvePart::None;
 };
 
 }

@@ -10,7 +10,8 @@ namespace notes {
 
 namespace {
 constexpr quint32 kClipMagic = 0x4E4F5445;
-constexpr quint32 kClipVersion = 5;
+constexpr quint32 kClipVersion = 6;
+constexpr quint32 kClipVersion5 = 5;
 constexpr quint32 kClipVersion4 = 4;
 constexpr quint32 kClipVersion3 = 3;
 constexpr quint32 kClipVersion2 = 2;
@@ -23,6 +24,9 @@ QDataStream& serializeShape(QDataStream& ds, const ShapeItem& sh)
     ds << sh.penWidth;
     ds << quint8(sh.kind);
     ds << sh.rot;
+    ds << quint32(sh.nodes.size());
+    for (const CurveNode& n : sh.nodes)
+        ds << n.pos << n.in << n.out;
     return ds;
 }
 
@@ -35,10 +39,18 @@ QDataStream& deserializeShape(QDataStream& ds, ShapeItem& sh, quint32 version)
     ds >> kind;
     sh.rot = 0.0;
     if (version >= 4) ds >> sh.rot;
+    if (version >= kClipVersion) {
+        quint32 nn = 0;
+        ds >> nn;
+        sh.nodes.resize(nn);
+        for (quint32 i = 0; i < nn; ++i)
+            ds >> sh.nodes[i].pos >> sh.nodes[i].in >> sh.nodes[i].out;
+    }
     switch (ShapeKind(kind)) {
     case ShapeKind::Rectangle:
     case ShapeKind::Triangle:
     case ShapeKind::Ellipse:
+    case ShapeKind::Curve:
         sh.kind = ShapeKind(kind);
         break;
     default:
@@ -63,7 +75,7 @@ QDataStream& deserializeStroke(QDataStream& ds, Stroke& s, quint32 version)
     quint32 n = 0;
     ds >> s.color;
     s.size = kDefaultStrokeSize;
-    if (version >= kClipVersion) ds >> s.size;
+    if (version >= kClipVersion5) ds >> s.size;
     ds >> n;
     s.pts.clear();
     s.pts.reserve(n);
@@ -150,7 +162,8 @@ bool deserializeClipboard(const QByteArray& bytes, ClipboardData& out)
     ds.setVersion(QDataStream::Qt_6_2);
     quint32 magic = 0, version = 0;
     ds >> magic >> version;
-    if (magic != kClipMagic || (version != kClipVersion && version != kClipVersion4
+    if (magic != kClipMagic || (version != kClipVersion && version != kClipVersion5
+        && version != kClipVersion4
         && version != kClipVersion3 && version != kClipVersion2 && version != kClipVersion1)
         || ds.status() != QDataStream::Ok)
         return false;

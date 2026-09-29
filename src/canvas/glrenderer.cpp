@@ -384,6 +384,8 @@ void GLRenderer::paint(const Frame& f)
     bgProg_->setUniformValue("baseSpacing", float(kGridBaseSpacing));
     bgProg_->setUniformValue("minPx", float(kGridMinSpacing));
     bgProg_->setUniformValue("fineOnset", 0.78f);
+    bgProg_->setUniformValue("fixedGrid", f.fixedGrid ? 1 : 0);
+    bgProg_->setUniformValue("fixedSpacing", float(kGridMinSpacing));
     bgProg_->setUniformValue("lineWidth", 1.0f);
     bgProg_->setUniformValue("gridOrigin", QVector2D(float(kPageMargin), float(kPageMargin)));
     bgProg_->setUniformValue("paperColor", QVector3D(0.99f, 0.99f, 0.99f));
@@ -461,14 +463,6 @@ void GLRenderer::drawStrokes(const Frame& f)
                      vertsScratch_.empty() ? nullptr : vertsScratch_.data(), GL_DYNAMIC_DRAW);
         strokesDirty_ = false;
     }
-    size_t offset = 0;
-    for (const auto& s : f.strokes) {
-        if (s.verts.empty()) continue;
-        beginStroke(s);
-        glDrawArrays(GL_TRIANGLES, GLint(offset / 6), GLsizei(s.verts.size() / 6));
-        endStroke(s);
-        offset += s.verts.size();
-    }
 
     glBindVertexArray(vao_[1]);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_[1]);
@@ -478,10 +472,50 @@ void GLRenderer::drawStrokes(const Frame& f)
                      (n && f.current) ? f.current->verts.data() : nullptr, GL_STREAM_DRAW);
         currentDirty_ = false;
     }
-    if (f.current && !f.current->verts.empty()) {
-        beginStroke(*f.current);
-        glDrawArrays(GL_TRIANGLES, 0, GLsizei(f.current->verts.size() / 6));
-        endStroke(*f.current);
+
+    std::vector<size_t> offsets(f.strokes.size());
+    {
+        size_t acc = 0;
+        for (size_t i = 0; i < f.strokes.size(); ++i) {
+            offsets[i] = acc;
+            acc += f.strokes[i].verts.size();
+        }
+    }
+
+    struct Drawable {
+        const Stroke* stroke;
+        size_t offset;
+    };
+    std::vector<Drawable> order;
+    order.reserve(f.strokes.size() + 1);
+    const auto appendGroup = [&](bool highlight) {
+        for (size_t i = 0; i < f.strokes.size(); ++i) {
+            if (needsAlphaMask(f.strokes[i]) != highlight) continue;
+            order.push_back({ &f.strokes[i], offsets[i] });
+        }
+        if (f.current && needsAlphaMask(*f.current) == highlight)
+            order.push_back({ f.current, 0 });
+    };
+    if (f.highlightBelow) {
+        appendGroup(true);
+        appendGroup(false);
+    } else {
+        appendGroup(false);
+        appendGroup(true);
+    }
+
+    GLuint boundVao = 0;
+    for (const Drawable& d : order) {
+        const Stroke& s = *d.stroke;
+        if (s.verts.empty()) continue;
+        const GLuint wanted = (d.stroke == f.current) ? vao_[1] : vao_[0];
+        if (boundVao != wanted) {
+            glBindVertexArray(wanted);
+            boundVao = wanted;
+        }
+        beginStroke(s);
+        glDrawArrays(GL_TRIANGLES, GLint(d.offset / 6), GLsizei(s.verts.size() / 6));
+        endStroke(s);
     }
     if (translucent) glDepthRange(0.0, 1.0);
 }

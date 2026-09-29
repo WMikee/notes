@@ -1,4 +1,5 @@
 #include "io/library.h"
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,7 +14,7 @@
 namespace notes {
 
 namespace {
-constexpr int kLibraryVersion = 1;
+constexpr int kLibraryVersion = 2;
 constexpr int kMinSize = 1;
 constexpr int kMaxSize = 48;
 
@@ -37,17 +38,48 @@ Library::Library(QObject* parent)
 
 void Library::load()
 {
-    QFile f(path_);
-    if (!f.open(QIODeviceBase::ReadOnly)) return;
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!loadDocument(path_)) {
+        if (loadDocument(path_ + QStringLiteral(".bak")))
+            loadedFromBackup_ = true;
+    }
+    saveTimer_->stop();
+}
+
+bool Library::loadDocument(const QString& path)
+{
+    QFile f(path);
+    if (!f.open(QIODeviceBase::ReadOnly)) return false;
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) return false;
     const QJsonObject root = doc.object();
     const QJsonObject ui = root.value("uiState").toObject();
 
     savedTool_ = ui.value("tool").toString(savedTool_);
     savedColor_ = ui.value("color").toString(savedColor_);
+    toolColors_.clear();
+    const QJsonObject toolColors = ui.value("toolColors").toObject();
+    for (auto it = toolColors.constBegin(); it != toolColors.constEnd(); ++it) {
+        const QString color = it.value().toString();
+        if (!color.isEmpty()) toolColors_.insert(it.key(), color);
+    }
+    const QJsonArray colorPresets = ui.value("colorPresets").toArray();
+    if (colorPresets.size() == 3) {
+        QStringList loadedPresets;
+        bool validPresets = true;
+        for (const QJsonValue& value : colorPresets) {
+            const QString color = value.toString();
+            if (color.isEmpty()) validPresets = false;
+            loadedPresets.append(color);
+        }
+        if (validPresets) savedColorPresets_ = loadedPresets;
+    }
     activeNotebookName_ = ui.value("activeNotebook").toString();
     savedSize_ = qBound(kMinSize, ui.value("size").toInt(savedSize_), kMaxSize);
     savedPressure_ = ui.value("pressure").toBool(savedPressure_);
+    savedStabilizer_ = ui.value("stabilizer").toBool(savedStabilizer_);
+    savedFixedGrid_ = ui.value("fixedGrid").toBool(savedFixedGrid_);
+    savedHighlightBelow_ = ui.value("highlightBelow").toBool(savedHighlightBelow_);
     const QJsonObject sizes = ui.value("sizes").toObject();
     for (auto it = sizes.constBegin(); it != sizes.constEnd(); ++it)
         toolSizes_.insert(it.key(), qBound(kMinSize, it.value().toInt(kMinSize), kMaxSize));
@@ -80,18 +112,62 @@ void Library::load()
             nb.lastPageId = nb.pages.isEmpty() ? -1 : nb.pages.first().id;
         notebooks_.append(nb);
     }
-    saveTimer_->stop();
+    trash_.clear();
+    const QJsonArray trashArr = root.value("trash").toArray();
+    for (const QJsonValue& tv : trashArr) {
+        const QJsonObject to = tv.toObject();
+        TrashItem item;
+        item.isPage = to.value("isPage").toBool(true);
+        item.name = to.value("name").toString();
+        item.notebookName = to.value("notebookName").toString();
+        item.pageId = to.value("pageId").toInt();
+        item.doc = QByteArray::fromBase64(to.value("doc").toString().toLatin1());
+        item.lastPageId = to.value("lastPageId").toInt(-1);
+        item.deletedAt = static_cast<qint64>(to.value("deletedAt").toDouble());
+        const QJsonArray ps = to.value("pages").toArray();
+        for (const QJsonValue& pv : ps) {
+            const QJsonObject po = pv.toObject();
+            Page p;
+            p.id = po.value("id").toInt();
+            p.name = po.value("name").toString();
+            p.doc = QByteArray::fromBase64(po.value("doc").toString().toLatin1());
+            if (p.id >= nextPageId_) nextPageId_ = p.id + 1;
+            item.pages.append(p);
+        }
+        if (item.pageId >= nextPageId_) nextPageId_ = item.pageId + 1;
+        trash_.append(item);
+    }
+    return true;
 }
 
 void Library::saveNow()
 {
     saveTimer_->stop();
+
+    if (QFileInfo::exists(path_)) {
+        const QString backup = path_ + QStringLiteral(".bak");
+        if (loadedFromBackup_) {
+            loadedFromBackup_ = false;
+        } else {
+            QFile::remove(backup);
+            QFile::copy(path_, backup);
+        }
+    }
+
     QJsonObject root;
     root["version"] = kLibraryVersion;
     root["nextPageId"] = nextPageId_;
     QJsonObject ui;
     ui["tool"] = savedTool_;
     ui["color"] = savedColor_;
+    QJsonObject toolColors;
+    for (auto it = toolColors_.constBegin(); it != toolColors_.constEnd(); ++it)
+        toolColors.insert(it.key(), it.value());
+    ui["toolColors"] = toolColors;
+    QJsonArray colorPresets;
+    for (const QString& color : savedColorPresets_)
+        colorPresets.append(color);
+    ui["colorPresets"] = colorPresets;
     ui["activeNotebook"] = activeNotebookName_;
     ui["size"] = savedSize(QStringLiteral("pencil"));
     QJsonObject sizes;
@@ -99,6 +175,9 @@ void Library::saveNow()
         sizes.insert(it.key(), it.value());
     ui["sizes"] = sizes;
     ui["pressure"] = savedPressure_;
+    ui["stabilizer"] = savedStabilizer_;
+    ui["fixedGrid"] = savedFixedGrid_;
+    ui["highlightBelow"] = savedHighlightBelow_;
     root["uiState"] = ui;
     QJsonArray books;
     for (const Notebook& nb : notebooks_) {
@@ -117,6 +196,29 @@ void Library::saveNow()
         books.append(bo);
     }
     root["notebooks"] = books;
+
+    QJsonArray trashArr;
+    for (const TrashItem& item : trash_) {
+        QJsonObject to;
+        to["isPage"] = item.isPage;
+        to["name"] = item.name;
+        to["notebookName"] = item.notebookName;
+        to["pageId"] = item.pageId;
+        to["doc"] = QString::fromLatin1(item.doc.toBase64());
+        to["lastPageId"] = item.lastPageId;
+        to["deletedAt"] = static_cast<double>(item.deletedAt);
+        QJsonArray ps;
+        for (const Page& p : item.pages) {
+            QJsonObject po;
+            po["id"] = p.id;
+            po["name"] = p.name;
+            po["doc"] = QString::fromLatin1(p.doc.toBase64());
+            ps.append(po);
+        }
+        to["pages"] = ps;
+        trashArr.append(to);
+    }
+    root["trash"] = trashArr;
 
     QDir().mkpath(QFileInfo(path_).absolutePath());
     QSaveFile f(path_);
@@ -217,6 +319,28 @@ void Library::setSavedColor(const QString& color)
     scheduleSave();
 }
 
+QString Library::savedColorForTool(const QString& tool) const
+{
+    return toolColors_.value(tool);
+}
+
+void Library::setSavedColorForTool(const QString& tool, const QString& color)
+{
+    if (tool.isEmpty() || color.isEmpty()) return;
+    const auto it = toolColors_.constFind(tool);
+    if (it != toolColors_.constEnd() && it.value() == color) return;
+    toolColors_.insert(tool, color);
+    scheduleSave();
+}
+
+void Library::setSavedColorPresets(const QStringList& colors)
+{
+    if (colors.size() != 3 || colors.contains(QString())) return;
+    if (colors == savedColorPresets_) return;
+    savedColorPresets_ = colors;
+    scheduleSave();
+}
+
 void Library::setActiveNotebookName(const QString& name)
 {
     if (name == activeNotebookName_) return;
@@ -245,6 +369,27 @@ void Library::setSavedPressure(bool on)
 {
     if (on == savedPressure_) return;
     savedPressure_ = on;
+    scheduleSave();
+}
+
+void Library::setSavedStabilizer(bool on)
+{
+    if (on == savedStabilizer_) return;
+    savedStabilizer_ = on;
+    scheduleSave();
+}
+
+void Library::setSavedFixedGrid(bool on)
+{
+    if (on == savedFixedGrid_) return;
+    savedFixedGrid_ = on;
+    scheduleSave();
+}
+
+void Library::setSavedHighlightBelow(bool on)
+{
+    if (on == savedHighlightBelow_) return;
+    savedHighlightBelow_ = on;
     scheduleSave();
 }
 
@@ -292,6 +437,13 @@ int Library::duplicateNotebook(int index, const QString& newName)
 void Library::removeNotebook(int index)
 {
     if (index < 0 || index >= notebooks_.size()) return;
+    TrashItem item;
+    item.isPage = false;
+    item.name = notebooks_[index].name;
+    item.pages = notebooks_[index].pages;
+    item.lastPageId = notebooks_[index].lastPageId;
+    item.deletedAt = QDateTime::currentMSecsSinceEpoch();
+    trash_.prepend(item);
     notebooks_.removeAt(index);
     emit changed();
     scheduleSave();
@@ -330,6 +482,15 @@ void Library::removePage(int notebookIndex, int pageId)
 {
     const int pos = pageIndexById(notebookIndex, pageId);
     if (pos < 0) return;
+    const Page& page = notebooks_[notebookIndex].pages[pos];
+    TrashItem item;
+    item.isPage = true;
+    item.name = page.name;
+    item.notebookName = notebooks_[notebookIndex].name;
+    item.pageId = page.id;
+    item.doc = page.doc;
+    item.deletedAt = QDateTime::currentMSecsSinceEpoch();
+    trash_.prepend(item);
     notebooks_[notebookIndex].pages.removeAt(pos);
     if (notebooks_[notebookIndex].lastPageId == pageId) {
         notebooks_[notebookIndex].lastPageId = notebooks_[notebookIndex].pages.isEmpty()
@@ -337,6 +498,107 @@ void Library::removePage(int notebookIndex, int pageId)
     }
     emit changed();
     scheduleSave();
+}
+
+const TrashItem* Library::trashItemAt(int index) const
+{
+    if (index < 0 || index >= trash_.size()) return nullptr;
+    return &trash_[index];
+}
+
+void Library::restoreTrashItem(int index)
+{
+    if (index < 0 || index >= trash_.size()) return;
+    const TrashItem item = trash_[index];
+    if (item.isPage) {
+        int nb = -1;
+        for (int i = 0; i < notebooks_.size(); ++i) {
+            if (notebooks_[i].name == item.notebookName) {
+                nb = i;
+                break;
+            }
+        }
+        if (nb < 0) {
+            Notebook fresh;
+            fresh.name = item.notebookName.isEmpty()
+                ? QStringLiteral("NoteBook") : item.notebookName;
+            if (notebookNameExists(fresh.name)) {
+                int n = 2;
+                while (notebookNameExists(QStringLiteral("%1 %2").arg(fresh.name).arg(n)))
+                    ++n;
+                fresh.name = QStringLiteral("%1 %2").arg(fresh.name).arg(n);
+            }
+            notebooks_.append(fresh);
+            nb = notebooks_.size() - 1;
+        }
+        Page page;
+        page.id = item.pageId;
+        page.name = item.name;
+        page.doc = item.doc;
+        if (pageNameExists(nb, page.name)) {
+            int n = 2;
+            while (pageNameExists(nb, QStringLiteral("%1 %2").arg(page.name).arg(n)))
+                ++n;
+            page.name = QStringLiteral("%1 %2").arg(page.name).arg(n);
+        }
+        notebooks_[nb].pages.append(page);
+        if (notebooks_[nb].lastPageId < 0)
+            notebooks_[nb].lastPageId = page.id;
+    } else {
+        Notebook nb;
+        nb.name = item.name;
+        if (notebookNameExists(nb.name)) {
+            int n = 2;
+            while (notebookNameExists(QStringLiteral("%1 %2").arg(nb.name).arg(n)))
+                ++n;
+            nb.name = QStringLiteral("%1 %2").arg(nb.name).arg(n);
+        }
+        nb.pages = item.pages;
+        nb.lastPageId = item.lastPageId;
+        notebooks_.append(nb);
+    }
+    trash_.removeAt(index);
+    emit changed();
+    scheduleSave();
+}
+
+void Library::removeTrashItem(int index)
+{
+    if (index < 0 || index >= trash_.size()) return;
+    trash_.removeAt(index);
+    emit changed();
+    scheduleSave();
+}
+
+void Library::emptyTrash()
+{
+    if (trash_.isEmpty()) return;
+    trash_.clear();
+    emit changed();
+    scheduleSave();
+}
+
+void Library::renameNotebook(int index, const QString& newName)
+{
+    if (index < 0 || index >= notebooks_.size()) return;
+    if (notebooks_[index].name == newName) return;
+    notebooks_[index].name = newName;
+    emit changed();
+    scheduleSave();
+}
+
+void Library::renamePage(int notebookIndex, int pageId, const QString& newName)
+{
+    if (notebookIndex < 0 || notebookIndex >= notebooks_.size()) return;
+    for (int i = 0; i < notebooks_[notebookIndex].pages.size(); ++i) {
+        if (notebooks_[notebookIndex].pages[i].id == pageId) {
+            if (notebooks_[notebookIndex].pages[i].name == newName) return;
+            notebooks_[notebookIndex].pages[i].name = newName;
+            emit changed();
+            scheduleSave();
+            return;
+        }
+    }
 }
 
 } // namespace notes

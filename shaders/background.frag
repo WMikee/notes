@@ -8,6 +8,8 @@ uniform vec2 viewport;
 uniform float baseSpacing;
 uniform float minPx;
 uniform float fineOnset;
+uniform int fixedGrid;
+uniform float fixedSpacing;
 uniform float lineWidth;
 uniform vec2 gridOrigin;
 uniform vec3 paperColor;
@@ -40,12 +42,16 @@ void main() {
     float px = 1.0 / (zoom * dpr * ss);
     float inside = 1.0 - smoothstep(-px, px, d);
 
-    float t = log2(minPx / (baseSpacing * zoom));
-    float lvl = ceil(t);
-    float s = baseSpacing * exp2(lvl);
-    float fine = smoothstep(fineOnset, 1.0, lvl - t);
-
-    float a = max(grid(screen, s), grid(screen, s * 0.5) * fine);
+    float a;
+    if (fixedGrid != 0) {
+        a = grid(screen, fixedSpacing);
+    } else {
+        float t = log2(minPx / (baseSpacing * zoom));
+        float lvl = ceil(t);
+        float s = baseSpacing * exp2(lvl);
+        float fine = smoothstep(fineOnset, 1.0, lvl - t);
+        a = max(grid(screen, s), grid(screen, s * 0.5) * fine);
+    }
     vec3 paper = mix(paperColor, gridColor, a);
     frag = vec4(mix(outsideColor, paper, inside), 1.0);
 }

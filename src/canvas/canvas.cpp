@@ -21,6 +21,7 @@
 
 namespace {
 constexpr float kHighlightAlpha = 0.45f;
+constexpr int kMaxEraseTrailSteps = 48;
 
 QCursor pencilCursor()
 {
@@ -106,10 +107,29 @@ void Canvas::setColor(const QColor& c)
     color_ = c;
 }
 
+void Canvas::setFixedGrid(bool on)
+{
+    if (fixedGrid_ == on) return;
+    fixedGrid_ = on;
+    update();
+}
+
 void Canvas::setPressureEnabled(bool on)
 {
     if (pressureEnabled_ == on) return;
     pressureEnabled_ = on;
+}
+
+void Canvas::setStabilizerEnabled(bool on)
+{
+    stabilizerEnabled_ = on;
+}
+
+void Canvas::setHighlightBelow(bool on)
+{
+    if (highlightBelow_ == on) return;
+    highlightBelow_ = on;
+    update();
 }
 
 void Canvas::setStrokeSize(float size)
@@ -178,6 +198,7 @@ void Canvas::undo()
 {
     if (editingText_ >= 0) finishEditText();
     doc_.undo();
+    selTool_->invalidateBox();
     renderer_.invalidateStrokes();
     update();
 }
@@ -186,6 +207,7 @@ void Canvas::redo()
 {
     if (editingText_ >= 0) finishEditText();
     doc_.redo();
+    selTool_->invalidateBox();
     renderer_.invalidateStrokes();
     update();
 }
@@ -285,6 +307,7 @@ picked.push_back(sh.id);
 doc_.commitAdd(std::move(added), std::move(addedTexts),
                    std::move(addedImages), std::move(addedShapes));
         selTool_->setSelection(std::move(picked), doc_);
+        renderer_.invalidateStrokes();
         update();
         return;
     }
@@ -389,6 +412,14 @@ void Canvas::resizeGL(int w, int h)
 
 void Canvas::paintGL()
 {
+    const bool canUndo = doc_.undoAvailable();
+    const bool canRedo = doc_.redoAvailable();
+    if (canUndo != lastCanUndo_ || canRedo != lastCanRedo_) {
+        lastCanUndo_ = canUndo;
+        lastCanRedo_ = canRedo;
+        emit historyChanged(canUndo, canRedo);
+    }
+
     ToolContext& c = ctx();
     Frame f(cam_, doc_.strokes(), doc_.shapes(), doc_.images(), doc_.texts());
     f.current = &cur_;
@@ -411,6 +442,8 @@ void Canvas::paintGL()
     f.viewH = height();
     f.dpr = devicePixelRatioF();
     f.defaultFbo = defaultFramebufferObject();
+    f.fixedGrid = fixedGrid_;
+    f.highlightBelow = highlightBelow_;
 
     renderer_.paint(f);
 
@@ -544,6 +577,28 @@ void Canvas::wheelEvent(QWheelEvent* e)
     update();
 }
 
+bool Canvas::event(QEvent* e)
+{
+    if (e->type() == QEvent::ShortcutOverride && editingText_ >= 0) {
+        auto* ke = static_cast<QKeyEvent*>(e);
+        if (ke->modifiers() == Qt::NoModifier) {
+            switch (ke->key()) {
+            case Qt::Key_V:
+            case Qt::Key_B:
+            case Qt::Key_H:
+            case Qt::Key_E:
+            case Qt::Key_T:
+            case Qt::Key_F:
+                e->accept();
+                return true;
+            default:
+                break;
+            }
+        }
+    }
+    return QOpenGLWidget::event(e);
+}
+
 void Canvas::keyPressEvent(QKeyEvent* e)
 {
     if (editingText_ >= 0) {
@@ -626,6 +681,7 @@ void Canvas::beginStroke(const QPointF& p, float pr)
     cur_.id = doc_.nextId();
     cur_.color = color_;
     cur_.size = size_;
+    cur_.stabilized = stabilizerEnabled_;
     if (tool_ == ToolId::Highlighter) {
         QColor c = color_;
         c.setAlphaF(kHighlightAlpha);
@@ -711,23 +767,25 @@ void Canvas::eraseAt(const QPointF& p)
         prev = QPointF(eraserTrail_.back().x, eraserTrail_.back().y);
 
     const float dist = std::hypot(w.x() - prev.x(), w.y() - prev.y());
-    const int n = std::max(1, int(std::ceil(dist / step)));
+    const int n = std::min(kMaxEraseTrailSteps,
+                           std::max(1, int(std::ceil(dist / step))));
     const float now = float(eraseClock_.elapsed()) / 1000.0f;
     for (int i = 0; i < n; ++i) {
         const float t = float(i + 1) / float(n);
         const QPointF sp(prev.x() + (w.x() - prev.x()) * t,
                          prev.y() + (w.y() - prev.y()) * t);
         eraserTrail_.push_back({float(sp.x()), float(sp.y()), r, now});
-        Document::EraseResult removed =
-            (eraserMode_ == EraserMode::Partial)
-            ? doc_.erasePartial(sp, r)
-            : doc_.eraseNear(sp, r);
-        for (auto& s : removed.strokes) eraseBatch_.push_back(std::move(s));
-        for (auto& t2 : removed.texts) textEraseBatch_.push_back(std::move(t2));
-        for (auto& im : removed.images) imageEraseBatch_.push_back(std::move(im));
-        for (auto& sh : removed.shapes) shapeEraseBatch_.push_back(std::move(sh));
-        for (auto& s : removed.added) partialAddBatch_.push_back(std::move(s));
     }
+
+    Document::EraseResult removed = (eraserMode_ == EraserMode::Partial)
+        ? doc_.erasePartial(prev, w, r)
+        : doc_.eraseNear(prev, w, r);
+    for (auto& s : removed.strokes) eraseBatch_.push_back(std::move(s));
+    for (auto& t2 : removed.texts) textEraseBatch_.push_back(std::move(t2));
+    for (auto& im : removed.images) imageEraseBatch_.push_back(std::move(im));
+    for (auto& sh : removed.shapes) shapeEraseBatch_.push_back(std::move(sh));
+    for (auto& s : removed.added) partialAddBatch_.push_back(std::move(s));
+
     if (!eraseTimer_->isActive())
         eraseTimer_->start();
     renderer_.invalidateStrokes();

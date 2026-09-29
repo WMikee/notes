@@ -31,6 +31,7 @@ add_executable(notes
     src/ui/sizenumberfield.h src/ui/sizenumberfield.cpp
     src/ui/sidepanel.h src/ui/sidepanel.cpp
     src/ui/pagepicker.h src/ui/pagepicker.cpp
+    src/ui/trashdialog.h src/ui/trashdialog.cpp
     src/ui/toolbutton.h src/ui/toolbutton.cpp
     src/theme.h
     src/ui/anim.h

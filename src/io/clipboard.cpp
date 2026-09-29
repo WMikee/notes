@@ -10,7 +10,8 @@ namespace notes {
 
 namespace {
 constexpr quint32 kClipMagic = 0x4E4F5445;
-constexpr quint32 kClipVersion = 4;
+constexpr quint32 kClipVersion = 5;
+constexpr quint32 kClipVersion4 = 4;
 constexpr quint32 kClipVersion3 = 3;
 constexpr quint32 kClipVersion2 = 2;
 constexpr quint32 kClipVersion1 = 1;
@@ -50,16 +51,19 @@ QDataStream& deserializeShape(QDataStream& ds, ShapeItem& sh, quint32 version)
 QDataStream& serializeStroke(QDataStream& ds, const Stroke& s)
 {
     ds << s.color;
+    ds << s.size;
     ds << quint32(s.pts.size());
     for (const Pt& p : s.pts)
         ds << p.x << p.y << p.p;
     return ds;
 }
 
-QDataStream& deserializeStroke(QDataStream& ds, Stroke& s)
+QDataStream& deserializeStroke(QDataStream& ds, Stroke& s, quint32 version)
 {
     quint32 n = 0;
     ds >> s.color;
+    s.size = kDefaultStrokeSize;
+    if (version >= kClipVersion) ds >> s.size;
     ds >> n;
     s.pts.clear();
     s.pts.reserve(n);
@@ -146,8 +150,8 @@ bool deserializeClipboard(const QByteArray& bytes, ClipboardData& out)
     ds.setVersion(QDataStream::Qt_6_2);
     quint32 magic = 0, version = 0;
     ds >> magic >> version;
-    if (magic != kClipMagic || (version != kClipVersion && version != kClipVersion3
-        && version != kClipVersion2 && version != kClipVersion1)
+    if (magic != kClipMagic || (version != kClipVersion && version != kClipVersion4
+        && version != kClipVersion3 && version != kClipVersion2 && version != kClipVersion1)
         || ds.status() != QDataStream::Ok)
         return false;
 
@@ -157,7 +161,7 @@ bool deserializeClipboard(const QByteArray& bytes, ClipboardData& out)
     out.strokes.reserve(ns);
     for (quint32 i = 0; i < ns; ++i) {
         Stroke s;
-        deserializeStroke(ds, s);
+        deserializeStroke(ds, s, version);
         out.strokes.push_back(std::move(s));
     }
     quint32 nt = 0;

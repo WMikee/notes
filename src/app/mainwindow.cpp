@@ -11,11 +11,13 @@
 #include "io/pdfexport.h"
 #include "theme.h"
 #include "ui/toolbutton.h"
+#include "scene/page.h"
 #include <QAbstractAnimation>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
+#include <QColorDialog>
 #include <QCloseEvent>
 #include <QComboBox>
 
@@ -25,10 +27,11 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
-#include <QGraphicsOpacityEffect>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
@@ -41,8 +44,9 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
+#include <QStyleHints>
+#include <QTimer>
 #include <QToolButton>
-#include <QTransform>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <vector>
@@ -65,6 +69,25 @@ bool toolUsesSlider(const QString& toolId)
 bool toolUsesSizeChoice(const QString& toolId)
 {
     return toolId == QLatin1String("text") || toolId == QLatin1String("shape");
+}
+
+bool toolUsesStabilizer(const QString& toolId)
+{
+    return toolId == QLatin1String("pencil")
+        || toolId == QLatin1String("highlighter");
+}
+
+bool toolUsesHighlightOrder(const QString& toolId)
+{
+    return toolId == QLatin1String("highlighter");
+}
+
+bool toolUsesColor(const QString& toolId)
+{
+    return toolId == QLatin1String("pencil")
+        || toolId == QLatin1String("highlighter")
+        || toolId == QLatin1String("text")
+        || toolId == QLatin1String("shape");
 }
 
 struct SizeChoice
@@ -93,6 +116,23 @@ QLabel* makeNavLabel(QWidget* parent, QHBoxLayout* layout, const QString& text)
     return label;
 }
 
+QIcon historyIcon(const QString& path)
+{
+    QIcon icon(path);
+    const QPixmap pm = icon.pixmap(QSize(30, 30));
+    if (pm.isNull()) return icon;
+    QPixmap dim(pm.size());
+    dim.setDevicePixelRatio(pm.devicePixelRatio());
+    dim.fill(Qt::transparent);
+    QPainter p(&dim);
+    p.setOpacity(0.3);
+    p.drawPixmap(0, 0, pm);
+    p.end();
+    icon.addPixmap(dim, QIcon::Disabled, QIcon::Off);
+    icon.addPixmap(dim, QIcon::Disabled, QIcon::On);
+    return icon;
+}
+
 }
 
 NotesWindow::NotesWindow()
@@ -119,6 +159,13 @@ NotesWindow::NotesWindow()
         {QStringLiteral("text"), library_->savedSize(QStringLiteral("text"))},
         {QStringLiteral("shape"), library_->savedSize(QStringLiteral("shape"))},
     };
+
+    for (const QString& tool : {QStringLiteral("pencil"), QStringLiteral("highlighter"),
+                                QStringLiteral("text"), QStringLiteral("shape")}) {
+        const QString remembered = library_->savedColorForTool(tool);
+        toolColors_.insert(tool, QColor(remembered.isEmpty() ? savedColor.name() : remembered));
+    }
+    selectedColor_ = savedColor;
 
     sidePanel_ = new SidePanel(library_, this);
     connect(sidePanel_, &SidePanel::selectionChanged, this, &NotesWindow::syncFromPanel);
@@ -173,11 +220,17 @@ NotesWindow::NotesWindow()
     connect(pasteAct, &QAction::triggered, canvas_, &Canvas::paste);
 
     viewMenu_ = new QMenu(QStringLiteral("Ver"), this);
-    panelAct_ = viewMenu_->addAction("Panel de archivos");
-    panelAct_->setCheckable(true);
-    panelAct_->setChecked(true);
-    connect(panelAct_, &QAction::toggled, this,
-        [this](bool on) { setPanelCollapsed(!on); });
+    QAction* notebookGridAct = viewMenu_->addAction(tr("Cuadrícula estilo cuaderno"));
+    notebookGridAct->setCheckable(true);
+    notebookGridAct->setChecked(library_->savedFixedGrid());
+    notebookGridAct->setToolTip(
+        tr("Mantiene una cuadrícula de %1 columnas por página independientemente del zoom")
+            .arg(kGridCellsAcross));
+    canvas_->setFixedGrid(library_->savedFixedGrid());
+    connect(notebookGridAct, &QAction::toggled, this, [this](bool on) {
+        canvas_->setFixedGrid(on);
+        if (library_) library_->setSavedFixedGrid(on);
+    });
 
     QActionGroup* tools = new QActionGroup(this);
     tools->setExclusive(true);
@@ -195,6 +248,15 @@ NotesWindow::NotesWindow()
     textAct->setCheckable(true);
     QAction* shapeAct = tools->addAction(QIcon(":/assets/rectangle.png"), "Figura");
     shapeAct->setCheckable(true);
+
+    applyShortcut(pointerAct, ActionId::Pointer);
+    applyShortcut(penAct, ActionId::Pencil);
+    applyShortcut(highlightAct, ActionId::Highlighter);
+    applyShortcut(eraserAct, ActionId::Eraser);
+    applyShortcut(textAct, ActionId::Text);
+    applyShortcut(shapeAct, ActionId::Shape);
+    for (QAction* act : {pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct})
+        addAction(act);
 
     const auto applyTool = [this, pointerAct, penAct, highlightAct, eraserAct, textAct, shapeAct](QAction* a) {
         Canvas::ToolId t = Canvas::ToolId::Select;
@@ -225,6 +287,7 @@ NotesWindow::NotesWindow()
         }
         canvas_->setTool(t);
         currentToolId_ = id;
+        applyActiveToolColor(id);
         syncToolOptions();
         if (library_) library_->setSavedTool(id);
     };
@@ -313,29 +376,29 @@ NotesWindow::NotesWindow()
     colorLayout->setSpacing(6);
     colorLayout->setAlignment(Qt::AlignHCenter);
 
-    const QColor palette[] = {
-        QColor(0x00, 0x00, 0x00),
-        QColor(0xff, 0x00, 0x00),
-        QColor(0xcc, 0xff, 0x00),
+    const QStringList defaultPalette = {
+        QStringLiteral("#000000"), QStringLiteral("#ff0000"), QStringLiteral("#ccff00")
     };
-
-    for (const QColor& c : palette) {
-        QToolButton* sw = makeSwatch(c);
+    QStringList paletteNames = library_ ? library_->savedColorPresets() : defaultPalette;
+    if (paletteNames.size() != defaultPalette.size()) paletteNames = defaultPalette;
+    swatchColors_.clear();
+    for (int i = 0; i < paletteNames.size(); ++i) {
+        QColor color(paletteNames.at(i));
+        if (!color.isValid()) color = QColor(defaultPalette.at(i));
+        swatchColors_.push_back(color);
+        QToolButton* sw = makeSwatch(i, color);
         colorLayout->addWidget(sw, 0, Qt::AlignHCenter);
         swatches_.push_back(sw);
     }
 
     panelLayout->addLayout(colorLayout);
     toolPanel_->adjustSize();
-    for (const QColor& c : palette) {
-        if (c == savedColor) {
-            selectedColor_ = c;
-            break;
-        }
-    }
-    if (library_) library_->setSavedColor(selectedColor_.name());
+    QStringList normalizedPalette;
+    for (const QColor& color : swatchColors_)
+        normalizedPalette.append(color.name());
+    if (library_) library_->setSavedColorPresets(normalizedPalette);
     canvas_->setColor(selectedColor_);
-    refreshSwatches();
+    updateSelectedSwatch();
 
     positionToolPanel();
     buildNavPanel();
@@ -344,26 +407,6 @@ NotesWindow::NotesWindow()
     connect(sidePanel_, &SidePanel::collapseRequested, this,
         [this] { setPanelCollapsed(true); });
     positionSidePanel();
-
-    collapseTab_ = new QToolButton(this);
-    collapseTab_->setObjectName("collapseTab");
-    const QPixmap fwd = QIcon(":/assets/forward.png").pixmap(QSize(16, 16));
-    QTransform rotate;
-    rotate.rotate(180);
-    collapseTab_->setIcon(QIcon(fwd.transformed(rotate)));
-    collapseTab_->setIconSize(QSize(16, 16));
-    collapseTab_->setFixedSize(34, 34);
-    collapseTab_->setFocusPolicy(Qt::NoFocus);
-    collapseTab_->setToolTip("Mostrar panel");
-    collapseTab_->setStyleSheet(
-        QStringLiteral("QToolButton#collapseTab { background-color: %1; border: none; "
-                       "border-radius: 8px; }"
-                       "QToolButton#collapseTab:hover { background-color: %2; }")
-            .arg(theme::kPanel.name(), theme::kPanelRaised.name()));
-    collapseTab_->hide();
-    connect(collapseTab_, &QToolButton::clicked, this,
-        [this] { setPanelCollapsed(false); });
-    positionCollapseTab();
 
     int initialNotebook = 0;
     if (!activeNotebookName.isEmpty()) {
@@ -378,6 +421,18 @@ NotesWindow::NotesWindow()
     }
     if (library_->notebookCount() == 0) initialNotebook = -1;
     sidePanel_->selectNotebook(initialNotebook);
+
+    autosaveTimer_ = new QTimer(this);
+    autosaveTimer_->setInterval(5000);
+    connect(autosaveTimer_, &QTimer::timeout, this, [this] {
+        if (!canvas_ || !canvas_->isDirty()) return;
+        if (currentNb_ < 0 || currentPageId_ < 0) return;
+        saveCurrentPage();
+        if (library_) library_->saveNow();
+        canvas_->markSaved();
+        updateTitle();
+    });
+    autosaveTimer_->start();
 }
 
 void NotesWindow::buildNavPanel()
@@ -391,6 +446,15 @@ void NotesWindow::buildNavPanel()
                        "border: none; border-radius: 10px; padding: 6px 12px; font-size: 13px; }"
                        "QToolButton#navMenuButton:hover { background-color: %3; }"
                        "QToolButton#navMenuButton:pressed { background-color: %4; }"
+                       "QToolButton#panelToggleButton { color: %2; background-color: transparent; "
+                       "border: none; border-radius: 10px; padding: 5px 10px; font-size: 13px; }"
+                       "QToolButton#panelToggleButton:hover { background-color: %3; }"
+                       "QToolButton#panelToggleButton:checked { background-color: %4; }"
+                       "QToolButton#historyButton { color: %2; background-color: transparent; "
+                       "border: none; border-radius: 10px; padding: 5px 8px; }"
+                       "QToolButton#historyButton:hover { background-color: %3; }"
+                       "QToolButton#historyButton:pressed { background-color: %4; }"
+                       "QToolButton#historyButton:disabled { color: %6; }"
                        "QToolButton#navMenuButton::menu-indicator { image: none; width: 0px; }"
                        "QFrame#navSeparator { background-color: %5; border: none; "
                        "min-width: 1px; max-width: 1px; }"
@@ -399,8 +463,8 @@ void NotesWindow::buildNavPanel()
                        "QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid %2; "
                        "border-radius: 4px; background-color: transparent; }"
                        "QCheckBox::indicator:hover { border-color: #ffffff; }"
-                       "QCheckBox::indicator:checked { background-color: %2; "
-                       "border: 1px solid #ffffff; }"
+                       "QCheckBox::indicator:checked { image: url(:/assets/check.png); "
+                       "border: 1px solid #ffffff; background-color: transparent; }"
                        "QSpinBox { color: %2; background-color: transparent; "
                        "border: none; border-radius: 8px; padding: 3px 8px; font-size: 13px; }"
                        "QSpinBox:hover { background-color: %3; }"
@@ -411,7 +475,8 @@ void NotesWindow::buildNavPanel()
                  theme::kTextPrimary.name(),
                  theme::alphaCss(QColor(Qt::white), 10),
                  theme::alphaCss(QColor(Qt::white), 18),
-                 theme::alphaCss(QColor(Qt::white), 70)));
+                 theme::alphaCss(QColor(Qt::white), 70),
+                 theme::alphaCss(theme::kTextPrimary, 80)));
 
     const QString menuStyle = QStringLiteral(
         "QMenu { background-color: %1; border: none; padding: 6px; }"
@@ -445,6 +510,24 @@ void NotesWindow::buildNavPanel()
         btn->setMenu(menu);
         navLayout->addWidget(btn);
     }
+
+    panelToggleButton_ = new QToolButton(navPanel_);
+    panelToggleButton_->setObjectName("panelToggleButton");
+    panelToggleButton_->setIcon(QIcon(":/assets/book.png"));
+    panelToggleButton_->setIconSize(QSize(18, 18));
+    panelToggleButton_->setText(tr("Panel"));
+    panelToggleButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    panelToggleButton_->setCheckable(true);
+    panelToggleButton_->setChecked(true);
+    panelToggleButton_->setFixedHeight(kNavRowHeight);
+    panelToggleButton_->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    panelToggleButton_->setFocusPolicy(Qt::NoFocus);
+    panelToggleButton_->setCursor(Qt::PointingHandCursor);
+    panelToggleButton_->setToolTip(tr("Ocultar panel de archivos"));
+    panelToggleButton_->setAccessibleName(tr("Panel de archivos"));
+    navLayout->addWidget(panelToggleButton_);
+    connect(panelToggleButton_, &QToolButton::toggled, this,
+        [this](bool visible) { setPanelCollapsed(!visible); });
 
     navLayout->addSpacing(8);
     QFrame* navSeparator = new QFrame(navPanel_);
@@ -502,6 +585,42 @@ void NotesWindow::buildNavPanel()
         if (library_) library_->setSavedPressure(on);
     });
 
+    toolsLayout->addSpacing(10);
+
+    stabilizerLabel_ = makeNavLabel(toolOptions_, toolsLayout, QStringLiteral("Stabilizer"));
+
+    stabilizerBox_ = new QCheckBox(toolOptions_);
+    stabilizerBox_->setObjectName("stabilizerBox");
+    stabilizerBox_->setToolTip("Suaviza el trazo siguiendo el puntero (desactivar = trazo directo)");
+    stabilizerBox_->setFocusPolicy(Qt::NoFocus);
+    stabilizerBox_->setCursor(Qt::PointingHandCursor);
+    stabilizerBox_->setChecked(library_->savedStabilizer());
+    stabilizerBox_->setFixedHeight(kNavRowHeight);
+    stabilizerBox_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    toolsLayout->addWidget(stabilizerBox_, 0, Qt::AlignVCenter);
+    connect(stabilizerBox_, &QCheckBox::toggled, this, [this](bool on) {
+        canvas_->setStabilizerEnabled(on);
+        if (library_) library_->setSavedStabilizer(on);
+    });
+
+    toolsLayout->addSpacing(10);
+
+    highlightLabel_ = makeNavLabel(toolOptions_, toolsLayout, QStringLiteral("Below"));
+
+    highlightBox_ = new QCheckBox(toolOptions_);
+    highlightBox_->setObjectName("highlightBox");
+    highlightBox_->setToolTip("Dibujar el resaltador por debajo de los trazos (desactivado = por encima)");
+    highlightBox_->setFocusPolicy(Qt::NoFocus);
+    highlightBox_->setCursor(Qt::PointingHandCursor);
+    highlightBox_->setChecked(library_->savedHighlightBelow());
+    highlightBox_->setFixedHeight(kNavRowHeight);
+    highlightBox_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    toolsLayout->addWidget(highlightBox_, 0, Qt::AlignVCenter);
+    connect(highlightBox_, &QCheckBox::toggled, this, [this](bool on) {
+        canvas_->setHighlightBelow(on);
+        if (library_) library_->setSavedHighlightBelow(on);
+    });
+
     navLayout->addWidget(toolOptions_);
 
     sizeChoiceOptions_ = new QWidget(navPanel_);
@@ -520,9 +639,47 @@ void NotesWindow::buildNavPanel()
     navLayout->addWidget(sizeChoiceOptions_);
     navLayout->addStretch(1);
 
+    const QString undoKey = QKeySequence(QKeySequence::Undo).toString(QKeySequence::NativeText);
+    const QString redoKey = QKeySequence(QKeySequence::Redo).toString(QKeySequence::NativeText);
+
+    undoButton_ = new QToolButton(navPanel_);
+    undoButton_->setObjectName("historyButton");
+    undoButton_->setIcon(historyIcon(QStringLiteral(":/assets/undo.png")));
+    undoButton_->setIconSize(QSize(18, 18));
+    undoButton_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    undoButton_->setFocusPolicy(Qt::NoFocus);
+    undoButton_->setCursor(Qt::PointingHandCursor);
+    undoButton_->setFixedHeight(kNavRowHeight);
+    undoButton_->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    undoButton_->setToolTip(undoKey.isEmpty() ? tr("Deshacer") : tr("Deshacer (%1)").arg(undoKey));
+    navLayout->addWidget(undoButton_);
+    connect(undoButton_, &QToolButton::clicked, canvas_, &Canvas::undo);
+
+    redoButton_ = new QToolButton(navPanel_);
+    redoButton_->setObjectName("historyButton");
+    redoButton_->setIcon(historyIcon(QStringLiteral(":/assets/redo.png")));
+    redoButton_->setIconSize(QSize(18, 18));
+    redoButton_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    redoButton_->setFocusPolicy(Qt::NoFocus);
+    redoButton_->setCursor(Qt::PointingHandCursor);
+    redoButton_->setFixedHeight(kNavRowHeight);
+    redoButton_->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    redoButton_->setToolTip(redoKey.isEmpty() ? tr("Rehacer") : tr("Rehacer (%1)").arg(redoKey));
+    navLayout->addWidget(redoButton_);
+    connect(redoButton_, &QToolButton::clicked, canvas_, &Canvas::redo);
+
+    connect(canvas_, &Canvas::historyChanged, this, &NotesWindow::updateHistoryButtons);
+    updateHistoryButtons();
+
     syncToolOptions();
     navPanel_->adjustSize();
     positionNavPanel();
+}
+
+void NotesWindow::updateHistoryButtons()
+{
+    if (undoButton_) undoButton_->setEnabled(canvas_ && canvas_->canUndo());
+    if (redoButton_) redoButton_->setEnabled(canvas_ && canvas_->canRedo());
 }
 
 void NotesWindow::syncToolOptions()
@@ -558,6 +715,29 @@ void NotesWindow::syncToolOptions()
         currentSize_ = v;
         applyToolSizeToCanvas();
         canvas_->setPressureEnabled(pressureBox_->isChecked());
+
+        const bool stabilizerVisible = toolUsesStabilizer(currentToolId_);
+        if (stabilizerLabel_) stabilizerLabel_->setVisible(stabilizerVisible);
+        if (stabilizerBox_) {
+            const QSignalBlocker blocker(stabilizerBox_);
+            stabilizerBox_->setChecked(library_ ? library_->savedStabilizer() : true);
+            stabilizerBox_->setVisible(stabilizerVisible);
+        }
+        canvas_->setStabilizerEnabled(!stabilizerBox_ || stabilizerBox_->isChecked());
+
+        const bool highlightOrderVisible = toolUsesHighlightOrder(currentToolId_);
+        if (highlightLabel_) highlightLabel_->setVisible(highlightOrderVisible);
+        if (highlightBox_) {
+            const QSignalBlocker blocker(highlightBox_);
+            highlightBox_->setChecked(library_ ? library_->savedHighlightBelow() : false);
+            highlightBox_->setVisible(highlightOrderVisible);
+        }
+        canvas_->setHighlightBelow(highlightBox_ && highlightBox_->isChecked());
+
+        if (navPanel_) {
+            navPanel_->adjustSize();
+            positionNavPanel();
+        }
         return;
     }
 
@@ -622,12 +802,19 @@ void NotesWindow::applyToolSizeToCanvas()
 
 void NotesWindow::setPanelCollapsed(bool collapsed)
 {
+    const bool visible = !collapsed;
+    if (panelToggleButton_) {
+        if (panelToggleButton_->isChecked() != visible) {
+            const QSignalBlocker blocker(panelToggleButton_);
+            panelToggleButton_->setChecked(visible);
+        }
+        panelToggleButton_->setToolTip(visible
+            ? tr("Ocultar panel de archivos") : tr("Mostrar panel de archivos"));
+    }
     if (panelCollapsed_ == collapsed) {
-        panelAct_->setChecked(!collapsed);
         return;
     }
     panelCollapsed_ = collapsed;
-    panelAct_->setChecked(!collapsed);
 
     const bool anims = notes::anim::enabled();
 
@@ -659,35 +846,6 @@ void NotesWindow::setPanelCollapsed(bool collapsed)
                 if (panelCollapsed_) sidePanel_->hide();
             });
             panelAnim_->start();
-        }
-    }
-
-    if (collapseTab_) {
-        if (tabFade_) {
-            tabFade_->stop();
-            tabFade_->deleteLater();
-            tabFade_ = nullptr;
-        }
-        if (collapseTab_->graphicsEffect())
-            collapseTab_->graphicsEffect()->deleteLater();
-        auto* eff = new QGraphicsOpacityEffect(collapseTab_);
-        collapseTab_->setGraphicsEffect(eff);
-        collapseTab_->show();
-        collapseTab_->raise();
-        if (!anims) {
-            eff->setOpacity(1.0);
-            collapseTab_->setVisible(collapsed);
-        } else {
-            eff->setOpacity(collapsed ? 0.0 : 1.0);
-            tabFade_ = new QPropertyAnimation(eff, "opacity", this);
-            tabFade_->setDuration(160);
-            tabFade_->setStartValue(collapsed ? 0.0 : 1.0);
-            tabFade_->setEndValue(collapsed ? 1.0 : 0.0);
-            tabFade_->setEasingCurve(QEasingCurve::OutCubic);
-            connect(tabFade_, &QPropertyAnimation::finished, this, [this, collapsed] {
-                collapseTab_->setVisible(collapsed);
-            });
-            tabFade_->start();
         }
     }
 }
@@ -832,6 +990,7 @@ bool NotesWindow::exportPdf()
     PagePickerDialog picker(pages, this);
     if (picker.exec() != QDialog::Accepted) return false;
     const QVector<int> rows = picker.selectedRows();
+    const bool includeStaticGrid = picker.includeStaticGrid();
     if (rows.isEmpty()) return false;
 
     QString path = QFileDialog::getSaveFileName(this, "Exportar a PDF", QString(),
@@ -863,7 +1022,8 @@ bool NotesWindow::exportPdf()
     }
 
     QString error;
-    if (!notes::exportPdf(path, out, &error)) {
+    if (!notes::exportPdf(path, out, &error, includeStaticGrid,
+                          library_ && library_->savedHighlightBelow())) {
         QMessageBox::warning(this, "Notas",
             error.isEmpty() ? QStringLiteral("No se pudo escribir el PDF.") : error);
         return false;
@@ -893,7 +1053,6 @@ bool NotesWindow::eventFilter(QObject* obj, QEvent* e)
         positionToolPanel();
         positionNavPanel();
         positionSidePanel();
-        positionCollapseTab();
     }
     return QMainWindow::eventFilter(obj, e);
 }
@@ -901,7 +1060,6 @@ bool NotesWindow::eventFilter(QObject* obj, QEvent* e)
 void NotesWindow::resizeEvent(QResizeEvent* e)
 {
     positionSidePanel();
-    positionCollapseTab();
     QMainWindow::resizeEvent(e);
     positionToolPanel();
     positionNavPanel();
@@ -950,17 +1108,6 @@ void NotesWindow::positionSidePanel()
     sidePanel_->raise();
 }
 
-void NotesWindow::positionCollapseTab()
-{
-    if (!collapseTab_) return;
-    constexpr int kMargin = 14;
-    const QPoint c0 = canvas_->mapTo(this, QPoint(0, 0));
-    const int cx = width() - kMargin - collapseTab_->width();
-    const int cy = c0.y() + kMargin + navBarBottomOffset();
-    collapseTab_->move(cx, cy);
-    collapseTab_->raise();
-}
-
 int NotesWindow::navBarBottomOffset() const
 {
     if (!navPanel_ || !canvas_) return 0;
@@ -968,7 +1115,7 @@ int NotesWindow::navBarBottomOffset() const
     return qMax(0, bottom - canvas_->mapTo(this, QPoint(0, 0)).y());
 }
 
-QToolButton* NotesWindow::makeSwatch(const QColor& c)
+QToolButton* NotesWindow::makeSwatch(int index, const QColor& c)
 {
     QPixmap pm(26, 26);
     pm.fill(Qt::transparent);
@@ -987,25 +1134,103 @@ QToolButton* NotesWindow::makeSwatch(const QColor& c)
     btn->setIcon(QIcon(pm));
     btn->setCursor(Qt::PointingHandCursor);
     btn->setProperty("swatchColor", c);
+    btn->setProperty("swatchIndex", index);
+    btn->setProperty("longPressTriggered", false);
+    btn->setToolTip(tr("Tocar para usar; mantener presionado para cambiar"));
     btn->setStyleSheet(
         "QToolButton { border: none; border-radius: 8px; }"
         "QToolButton:hover { background-color: transparent; }"
         "QToolButton:checked { background-color: rgba(255,255,255,20%); border-radius: 8px; }");
-    connect(btn, &QToolButton::clicked, this, [this, c] {
-        selectedColor_ = c;
-        canvas_->setColor(c);
-        if (library_) library_->setSavedColor(c.name());
-        refreshSwatches();
+
+    auto* holdTimer = new QTimer(btn);
+    holdTimer->setSingleShot(true);
+    connect(btn, &QToolButton::pressed, this, [this, btn, holdTimer] {
+        btn->setProperty("longPressTriggered", false);
+        const int interval = QGuiApplication::styleHints()->mousePressAndHoldInterval();
+        holdTimer->start(interval > 0 ? interval : 600);
+    });
+    connect(btn, &QToolButton::released, holdTimer, &QTimer::stop);
+    connect(holdTimer, &QTimer::timeout, this, [this, btn, index] {
+        btn->setProperty("longPressTriggered", true);
+        const QColor color = QColorDialog::getColor(
+            swatchColors_.at(index), this, tr("Cambiar color del preset"));
+        if (color.isValid()) setSwatchColor(index, color);
+    });
+    connect(btn, &QToolButton::clicked, this, [this, btn, index] {
+        if (btn->property("longPressTriggered").toBool()) return;
+        setActiveColor(swatchColors_.at(index));
     });
     return btn;
 }
 
+void NotesWindow::setActiveColor(const QColor& color)
+{
+    if (!color.isValid()) return;
+    selectedColor_ = color;
+    canvas_->setColor(color);
+    if (library_) library_->setSavedColor(color.name());
+    if (toolUsesColor(currentToolId_)) {
+        toolColors_.insert(currentToolId_, color);
+        if (library_) library_->setSavedColorForTool(currentToolId_, color.name());
+    }
+    updateSelectedSwatch();
+}
+
+void NotesWindow::applyActiveToolColor(const QString& toolId)
+{
+    if (!toolUsesColor(toolId)) return;
+    const QColor color = toolColors_.value(toolId, selectedColor_);
+    if (!color.isValid()) return;
+    selectedColor_ = color;
+    canvas_->setColor(color);
+    updateSelectedSwatch();
+}
+
+void NotesWindow::updateSelectedSwatch()
+{
+    selectedSwatchIndex_ = -1;
+    for (int i = 0; i < int(swatchColors_.size()); ++i) {
+        if (swatchColors_.at(i) == selectedColor_) {
+            selectedSwatchIndex_ = i;
+            break;
+        }
+    }
+    refreshSwatches();
+}
+
+void NotesWindow::setSwatchColor(int index, const QColor& color)
+{
+    if (index < 0 || index >= int(swatchColors_.size()) || !color.isValid()) return;
+    swatchColors_[index] = color;
+
+    QPixmap pm(26, 26);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawRoundedRect(0, 0, 26, 26, 6, 6);
+    p.end();
+
+    QToolButton* swatch = swatches_.at(index);
+    swatch->setIcon(QIcon(pm));
+    swatch->setProperty("swatchColor", color);
+
+    QStringList palette;
+    for (const QColor& preset : swatchColors_)
+        palette.append(preset.name());
+    if (library_) library_->setSavedColorPresets(palette);
+
+    if (selectedSwatchIndex_ == index)
+        setActiveColor(color);
+    else
+        updateSelectedSwatch();
+}
+
 void NotesWindow::refreshSwatches()
 {
-    for (QToolButton* b : swatches_) {
-        const QColor c = b->property("swatchColor").value<QColor>();
-        b->setChecked(c == selectedColor_);
-    }
+    for (QToolButton* b : swatches_)
+        b->setChecked(b->property("swatchIndex").toInt() == selectedSwatchIndex_);
 }
 
 } // namespace notes

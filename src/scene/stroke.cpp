@@ -19,8 +19,6 @@ constexpr float kSmoothPerSize = 0.12f;
 constexpr float kSmoothMin = 0.8f;
 constexpr float kSmoothMax = 3.0f;
 constexpr float kSmoothTail = 2.5f;
-constexpr int kCircleSegments = 64;
-constexpr int kCornerCapSegments = 32;
 constexpr float kDefaultFirstPressure = 0.25f;
 constexpr float kDefaultPressure = 0.5f;
 
@@ -38,9 +36,11 @@ struct StrokeOptions {
     float taperEnd = 0.0f;
     bool capStart = true;
     bool capEnd = true;
+    int capSegments = kOutlineCapSegments;
+    int cornerSegments = kOutlineCornerSegments;
 };
 
-StrokeOptions optionsFor(const QColor& color, bool complete, float size)
+StrokeOptions optionsFor(const QColor& color, bool complete, float size, bool stabilized = true)
 {
     StrokeOptions opt;
     opt.last = complete;
@@ -52,6 +52,10 @@ StrokeOptions optionsFor(const QColor& color, bool complete, float size)
         opt.streamline = 0.8f;
         opt.capStart = false;
         opt.capEnd = false;
+    }
+    if (!stabilized) {
+        opt.smoothing = 0.0f;
+        opt.streamline = 0.0f;
     }
     return opt;
 }
@@ -152,7 +156,8 @@ std::vector<StrokePoint> getStrokePoints(const std::vector<Pt>& rawin, const Str
     std::vector<GP> pts;
     pts.reserve(rawin.size());
     for (const Pt& p : rawin) pts.push_back({{p.x, p.y}, p.p});
-    smoothCenterline(pts, smoothSigma(opt.size));
+    if (opt.smoothing > 0.0f)
+        smoothCenterline(pts, smoothSigma(opt.size));
 
     if (pts.size() == 2) {
         const GP last = pts[1];
@@ -286,8 +291,8 @@ Outline getStrokeOutlinePoints(const std::vector<StrokePoint>& points, const Str
 
         if (isPointSharpCorner || isNextPointSharpCorner) {
             const Vec2 offset = vMul(vPer(prevVector), radius);
-            for (int k = 0; k <= kCornerCapSegments; ++k) {
-                const float tt = float(k) / float(kCornerCapSegments);
+            for (int k = 0; k <= opt.cornerSegments; ++k) {
+                const float tt = float(k) / float(opt.cornerSegments);
                 tempLeftPoint = vRotAround(vSub(point, offset), point, kFixedPi * tt);
                 leftPts.push_back(tempLeftPoint);
                 tempRightPoint = vRotAround(vAdd(point, offset), point, -kFixedPi * tt);
@@ -375,19 +380,19 @@ Outline getStrokeOutlinePoints(const std::vector<StrokePoint>& points, const Str
     if (points.size() == 1) {
         if (!(taperStart || taperEnd) || opt.last) {
             const float dotRadius = hasFirstRadius ? firstRadius : radius;
-            out.dot = drawDot(firstPoint, dotRadius, kCircleSegments);
+            out.dot = drawDot(firstPoint, dotRadius, opt.capSegments);
             out.dotCenter = firstPoint;
             out.dotRadius = dotRadius;
         }
     } else {
         if (opt.capStart && !(taperStart > 0.0f)) {
             const float startRadius = hasFirstRadius ? firstRadius : radius;
-            out.startCap = drawDot(firstPoint, startRadius, kCircleSegments);
+            out.startCap = drawDot(firstPoint, startRadius, opt.capSegments);
             out.startCenter = firstPoint;
         }
 
         if (opt.capEnd && !(taperEnd > 0.0f)) {
-            out.endCap = drawDot(lastPoint, radius, kCircleSegments);
+            out.endCap = drawDot(lastPoint, radius, opt.capSegments);
             out.endCenter = lastPoint;
         }
     }
@@ -473,7 +478,7 @@ void tessellateImpl(const std::vector<Pt>& pts, const QColor& color,
             : opt.size / 2.0f;
         const Vec2 center{pts[0].x, pts[0].y};
         pushFan(out, center,
-                drawDot(center, radius, kCircleSegments),
+                drawDot(center, radius, opt.capSegments),
                 color);
         return;
     }
@@ -507,7 +512,7 @@ void tessellateImpl(const std::vector<Pt>& pts, const QColor& color,
 
 void retessellate(Stroke& st)
 {
-    StrokeOptions opt = optionsFor(st.color, st.complete, st.size);
+    StrokeOptions opt = optionsFor(st.color, st.complete, st.size, st.stabilized);
     st.verts.clear();
     tessellateImpl(st.pts, st.color, opt, st.verts);
 }
@@ -524,19 +529,21 @@ std::vector<QPointF> toPoints(const std::vector<Vec2>& v)
 
 }
 
-StrokeOutline strokeOutline(const Stroke& st)
+StrokeOutline strokeOutline(const Stroke& st, int capSegments, int cornerSegments)
 {
     StrokeOutline out;
     if (st.pts.empty()) return out;
 
-    const StrokeOptions opt = optionsFor(st.color, st.complete, st.size);
+    StrokeOptions opt = optionsFor(st.color, st.complete, st.size, st.stabilized);
+    opt.capSegments = capSegments;
+    opt.cornerSegments = cornerSegments;
 
     if (isDotStroke(st.pts, opt)) {
         const float pressure = st.pts[0].p >= 0.0f ? st.pts[0].p : kDefaultPressure;
         const float radius = opt.thinning
             ? std::max(kMinRadius, strokeRadius(opt.size, opt.thinning, pressure))
             : opt.size / 2.0f;
-        out.body = toPoints(drawDot({st.pts[0].x, st.pts[0].y}, radius, kCircleSegments));
+        out.body = toPoints(drawDot({st.pts[0].x, st.pts[0].y}, radius, capSegments));
         return out;
     }
 

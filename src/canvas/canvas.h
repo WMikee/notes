@@ -12,6 +12,7 @@
 #include "scene/select.h"
 #include "scene/text.h"
 
+class QEvent;
 class QImage;
 class QKeyEvent;
 class QMouseEvent;
@@ -36,7 +37,10 @@ public:
     void setEraserMode(EraserMode m);
     void setShapeKind(ShapeKind k);
     void setColor(const QColor& c);
+    void setFixedGrid(bool on);
     void setPressureEnabled(bool on);
+    void setStabilizerEnabled(bool on);
+    void setHighlightBelow(bool on);
     void setStrokeSize(float size);
     void setEraserRadius(float radius);
     void setFontSize(float px);
@@ -45,6 +49,8 @@ public:
     float strokeSize() const { return size_; }
     void undo();
     void redo();
+    bool canUndo() const { return doc_.undoAvailable(); }
+    bool canRedo() const { return doc_.redoAvailable(); }
     void copy();
     void cut();
     void paste();
@@ -55,6 +61,9 @@ public:
     void newDocument();
     bool isDirty() const { return doc_.isDirty(); }
     void markSaved() { doc_.markSaved(); }
+
+signals:
+    void historyChanged(bool canUndo, bool canRedo);
 
 protected:
     void initializeGL() override;
@@ -68,6 +77,7 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void inputMethodEvent(QInputMethodEvent* e) override;
+    bool event(QEvent* e) override;
 
 private:
     enum class Gesture { None, Draw, Pan, Zoom, Select };
@@ -131,9 +141,12 @@ private:
     ShapeKind shapeKind_ = ShapeKind::Rectangle;
     QColor color_ = QColor(0.08f, 0.08f, 0.10f);
     bool pressureEnabled_ = true;
+    bool stabilizerEnabled_ = true;
+    bool highlightBelow_ = true;
     float size_ = kDefaultStrokeSize;
     float fontSize_ = 16.0f;
     float shapePenWidth_ = 3.0f;
+    bool fixedGrid_ = false;
     QPointF panLast_;
     bool drawing_ = false;
     bool erasing_ = false;
@@ -155,6 +168,8 @@ private:
 
     float gizmoAlpha_ = 1.0f;
     QVariantAnimation* gizmoAnim_ = nullptr;
+    bool lastCanUndo_ = false;
+    bool lastCanRedo_ = false;
 };
 
 }

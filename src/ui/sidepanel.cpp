@@ -1,5 +1,6 @@
 #include "ui/sidepanel.h"
 #include "ui/anim.h"
+#include "ui/trashdialog.h"
 #include "io/library.h"
 #include "theme.h"
 #include <QEasingCurve>
@@ -9,6 +10,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -93,6 +96,16 @@ void ItemRow::mousePressEvent(QMouseEvent* e)
     if (e->button() == Qt::LeftButton)
         emit clicked();
     QWidget::mousePressEvent(e);
+}
+
+void ItemRow::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    if (e->button() == Qt::LeftButton) {
+        emit doubleClicked();
+        e->accept();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(e);
 }
 
 void ItemRow::startHoverFade(bool on)
@@ -277,6 +290,15 @@ SidePanel::SidePanel(Library* library, QWidget* parent)
 
     nbHeaderLayout->addStretch(1);
 
+    QToolButton* trashBtn = new QToolButton(nbHeader);
+    trashBtn->setIcon(QIcon(":/assets/trash.png"));
+    trashBtn->setIconSize(QSize(15, 15));
+    trashBtn->setFixedSize(26, 26);
+    trashBtn->setFocusPolicy(Qt::NoFocus);
+    trashBtn->setToolTip(tr("Papelera de reciclaje"));
+    connect(trashBtn, &QToolButton::clicked, this, &SidePanel::openTrash);
+    nbHeaderLayout->addWidget(trashBtn);
+
     forwardBtn_ = new QToolButton(nbHeader);
     forwardBtn_->setIcon(QIcon(":/assets/forward.png"));
     forwardBtn_->setIconSize(QSize(14, 14));
@@ -364,6 +386,8 @@ ItemRow* SidePanel::makeRow(bool isPage, int index, const QString& text)
     row->setSelected(selected);
 
     connect(row, &ItemRow::clicked, this, [this, isPage, index] { onRowClicked(isPage, index); });
+    connect(row, &ItemRow::doubleClicked, this,
+        [this, isPage, index] { onRowDoubleClicked(isPage, index); });
     connect(row, &ItemRow::moreClicked, this, [this, row, isPage, index] {
         menu_->popupAt(row->mapToGlobal(QPoint(row->width(), row->height() + 2)), index, isPage);
     });
@@ -439,6 +463,12 @@ void SidePanel::activatePage(int notebookIndex, int pageId)
     emit selectionChanged();
 }
 
+void SidePanel::openTrash()
+{
+    TrashDialog dialog(lib_, this);
+    dialog.exec();
+}
+
 void SidePanel::selectNotebook(int index)
 {
     if (index < -1) return;
@@ -452,8 +482,8 @@ void SidePanel::selectNotebook(int index)
             ? lib_->pageAt(index, 0)->id : -1;
     }
     rememberSelection();
-    rebuildNotebooks();
     rebuildPages();
+    updateRowSelection();
     emit selectionChanged();
 }
 
@@ -464,14 +494,70 @@ void SidePanel::selectPage(int indexInList)
     if (!p) return;
     selectedPageId_ = p->id;
     rememberSelection();
-    rebuildPages();
+    updateRowSelection();
     emit selectionChanged();
+}
+
+void SidePanel::updateRowSelection()
+{
+    for (int i = 0; i < lib_->notebookCount(); ++i) {
+        QLayoutItem* item = bookLayout_->itemAt(i);
+        if (item) {
+            auto* row = qobject_cast<ItemRow*>(item->widget());
+            if (!row) continue;
+            row->setSelected(i == selectedBook_);
+        }
+    }
+    for (int i = 0; i < lib_->pageCount(selectedBook_); ++i) {
+        QLayoutItem* item = pageLayout_->itemAt(i);
+        if (item) {
+            auto* row = qobject_cast<ItemRow*>(item->widget());
+            if (!row) continue;
+            const Page* page = lib_->pageAt(selectedBook_, i);
+            row->setSelected(page && page->id == selectedPageId_);
+        }
+    }
 }
 
 void SidePanel::onRowClicked(bool isPage, int index)
 {
     if (isPage) selectPage(index);
     else selectNotebook(index);
+}
+
+void SidePanel::onRowDoubleClicked(bool isPage, int index)
+{
+    int notebook = selectedBook_;
+    int pageId = -1;
+    QString oldName;
+    if (isPage) {
+        if (notebook < 0) return;
+        const Page* page = lib_->pageAt(notebook, index);
+        if (!page) return;
+        pageId = page->id;
+        oldName = page->name;
+    } else {
+        if (index < 0 || index >= lib_->notebookCount()) return;
+        oldName = lib_->notebookName(index);
+    }
+
+    bool accepted = false;
+    const QString title = isPage ? tr("Renombrar page") : tr("Renombrar notebook");
+    const QString name = QInputDialog::getText(this, title, tr("Nombre:"),
+                                                QLineEdit::Normal, oldName, &accepted).trimmed();
+    if (!accepted || name.isEmpty() || name == oldName) return;
+
+    const bool nameTaken = isPage
+        ? lib_->pageNameExists(notebook, name)
+        : lib_->notebookNameExists(name);
+    if (nameTaken) {
+        QMessageBox::warning(this, tr("Nombre en uso"),
+                             tr("Ya existe un elemento con ese nombre."));
+        return;
+    }
+
+    if (isPage) lib_->renamePage(notebook, pageId, name);
+    else lib_->renameNotebook(index, name);
 }
 
 void SidePanel::onLibraryChanged()
@@ -539,7 +625,8 @@ void SidePanel::removeItemById(bool isPage, int index)
         if (index < 0 || index >= lib_->notebookCount()) return;
         if (lib_->pageCount(index) > 0) {
             const auto r = QMessageBox::question(this, tr("Notas"),
-                tr("Eliminar \"%1\" y sus paginas?").arg(lib_->notebookName(index)),
+                tr("Enviar \"%1\" y sus paginas a la papelera?")
+                    .arg(lib_->notebookName(index)),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
             if (r != QMessageBox::Yes) return;
         }

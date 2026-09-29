@@ -49,6 +49,8 @@ struct Frame {
     QRectF marquee;
     bool marqueeActive = false;
     float gizmoAlpha = 1.0f;
+    bool fixedGrid = false;
+    bool highlightBelow = true;
 
     int editingTextId = -1;
     int textCursor = 0;

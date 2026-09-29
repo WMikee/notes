@@ -16,6 +16,12 @@ enum class ActionId
     Copy,
     Cut,
     Paste,
+    Pointer,
+    Pencil,
+    Highlighter,
+    Eraser,
+    Text,
+    Shape,
 };
 
 QKeySequence defaultShortcut(ActionId id);

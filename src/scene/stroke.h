@@ -9,6 +9,9 @@ struct Pt { float x, y, p; };
 
 constexpr float kDefaultStrokeSize = 12.0f;
 
+inline constexpr int kOutlineCapSegments = 64;
+inline constexpr int kOutlineCornerSegments = 32;
+
 struct Stroke {
     int id = 0;
     std::vector<Pt> pts;
@@ -16,6 +19,7 @@ struct Stroke {
     QColor color;
     float size = kDefaultStrokeSize;
     bool complete = false;
+    bool stabilized = true;
 };
 
 struct StrokeOutline {
@@ -28,7 +32,8 @@ struct StrokeOutline {
 void tessellate(const std::vector<Pt>& pts, const QColor& color, std::vector<float>& out);
 void retessellate(Stroke& s);
 
-StrokeOutline strokeOutline(const Stroke& s);
+StrokeOutline strokeOutline(const Stroke& s, int capSegments = kOutlineCapSegments,
+                            int cornerSegments = kOutlineCornerSegments);
 
 float distanceTo(const Stroke& s, float x, float y);
 

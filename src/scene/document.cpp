@@ -1,8 +1,64 @@
 #include "scene/document.h"
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace notes {
+
+namespace {
+
+float distSqToSegment(float px, float py, float ax, float ay, float bx, float by)
+{
+    const float ex = bx - ax;
+    const float ey = by - ay;
+    const float len2 = ex * ex + ey * ey;
+    float t = len2 < 1e-12f ? 0.0f : ((px - ax) * ex + (py - ay) * ey) / len2;
+    t = std::clamp(t, 0.0f, 1.0f);
+    const float dx = px - (ax + t * ex);
+    const float dy = py - (ay + t * ey);
+    return dx * dx + dy * dy;
+}
+
+float cross2(float ox, float oy, float ax, float ay, float bx, float by)
+{
+    return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
+}
+
+bool segmentsCross(float ax, float ay, float bx, float by,
+                   float cx, float cy, float dx, float dy)
+{
+    const float o1 = cross2(ax, ay, bx, by, cx, cy);
+    const float o2 = cross2(ax, ay, bx, by, dx, dy);
+    const float o3 = cross2(cx, cy, dx, dy, ax, ay);
+    const float o4 = cross2(cx, cy, dx, dy, bx, by);
+    return ((o1 > 0.0f) != (o2 > 0.0f)) && ((o3 > 0.0f) != (o4 > 0.0f));
+}
+
+float distSqSegSeg(float ax, float ay, float bx, float by,
+                   float cx, float cy, float dx, float dy)
+{
+    if (segmentsCross(ax, ay, bx, by, cx, cy, dx, dy))
+        return 0.0f;
+    float best = distSqToSegment(ax, ay, cx, cy, dx, dy);
+    best = std::min(best, distSqToSegment(bx, by, cx, cy, dx, dy));
+    best = std::min(best, distSqToSegment(cx, cy, ax, ay, bx, by));
+    best = std::min(best, distSqToSegment(dx, dy, ax, ay, bx, by));
+    return best;
+}
+
+int segmentSamples(const QPointF& a, const QPointF& b, float radius)
+{
+    const double d = std::hypot(b.x() - a.x(), b.y() - a.y());
+    const double step = std::max(1e-3, double(radius) * 0.5);
+    return std::clamp(int(std::ceil(d / step)), 1, 32);
+}
+
+QPointF lerpPoint(const QPointF& a, const QPointF& b, double t)
+{
+    return QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t);
+}
+
+} // namespace
 
 Stroke* Document::strokeById(int id)
 {
@@ -180,19 +236,48 @@ void Document::redo()
     dirty_ = true;
 }
 
-Document::EraseResult Document::eraseNear(const QPointF& world, float radius)
+Document::EraseResult Document::eraseNear(const QPointF& from, const QPointF& to, float radius)
 {
     EraseResult res;
+    const float ax = float(from.x()), ay = float(from.y());
+    const float bx = float(to.x()), by = float(to.y());
+    const float rr = radius * radius;
+
+    const auto strokeHit = [&](const Stroke& s) {
+        if (s.pts.empty()) return false;
+        if (s.pts.size() == 1)
+            return distSqToSegment(s.pts[0].x, s.pts[0].y, ax, ay, bx, by) <= rr;
+        for (size_t i = 0; i + 1 < s.pts.size(); ++i) {
+            if (distSqSegSeg(s.pts[i].x, s.pts[i].y, s.pts[i + 1].x, s.pts[i + 1].y,
+                             ax, ay, bx, by) <= rr)
+                return true;
+        }
+        return false;
+    };
+
     for (auto it = strokes_.begin(); it != strokes_.end();) {
-        if (hitTest(*it, float(world.x()), float(world.y()), radius)) {
+        if (strokeHit(*it)) {
             res.strokes.push_back(std::move(*it));
             it = strokes_.erase(it);
         } else {
             ++it;
         }
     }
+
+    const int n = segmentSamples(from, to, radius);
+    std::vector<QPointF> samples;
+    samples.reserve(size_t(n));
+    for (int i = 0; i < n; ++i)
+        samples.push_back(lerpPoint(from, to, double(i + 1) / n));
+
+    const auto hitSamples = [&samples](const auto& test) {
+        for (const QPointF& q : samples)
+            if (test(q)) return true;
+        return false;
+    };
+
     for (auto it = texts_.begin(); it != texts_.end();) {
-        if (textHitTest(*it, world, radius)) {
+        if (hitSamples([&](const QPointF& q) { return textHitTest(*it, q, radius); })) {
             res.texts.push_back(std::move(*it));
             it = texts_.erase(it);
         } else {
@@ -200,7 +285,7 @@ Document::EraseResult Document::eraseNear(const QPointF& world, float radius)
         }
     }
     for (auto it = images_.begin(); it != images_.end();) {
-        if (imageHitTest(*it, world, radius)) {
+        if (hitSamples([&](const QPointF& q) { return imageHitTest(*it, q, radius); })) {
             res.images.push_back(std::move(*it));
             it = images_.erase(it);
         } else {
@@ -208,7 +293,7 @@ Document::EraseResult Document::eraseNear(const QPointF& world, float radius)
         }
     }
     for (auto it = shapes_.begin(); it != shapes_.end();) {
-        if (shapeHitTest(*it, world, radius)) {
+        if (hitSamples([&](const QPointF& q) { return shapeHitTest(*it, q, radius); })) {
             res.shapes.push_back(std::move(*it));
             it = shapes_.erase(it);
         } else {
@@ -218,20 +303,45 @@ Document::EraseResult Document::eraseNear(const QPointF& world, float radius)
     return res;
 }
 
-Document::EraseResult Document::erasePartial(const QPointF& world, float radius)
+Document::EraseResult Document::erasePartial(const QPointF& from, const QPointF& to, float radius)
 {
     EraseResult res;
-    const float rx = float(world.x());
-    const float ry = float(world.y());
+    const float ax = float(from.x()), ay = float(from.y());
+    const float bx = float(to.x()), by = float(to.y());
     const float rr = radius * radius;
     for (auto it = strokes_.begin(); it != strokes_.end();) {
         Stroke& s = *it;
-        std::vector<char> keep(s.pts.size(), 1);
+
+        // A straight line is stored as just two points, so testing only the
+        // vertices never reaches its middle. Subdivide every segment that
+        // comes within the eraser radius before deciding what to keep.
+        std::vector<Pt> pts = s.pts;
+        {
+            std::vector<Pt> dense;
+            dense.reserve(pts.size() * 2);
+            for (size_t i = 0; i < pts.size(); ++i) {
+                dense.push_back(pts[i]);
+                if (i + 1 >= pts.size()) continue;
+                const Pt& a = pts[i];
+                const Pt& b = pts[i + 1];
+                if (distSqSegSeg(a.x, a.y, b.x, b.y, ax, ay, bx, by) > rr) continue;
+                const float len = std::hypot(b.x - a.x, b.y - a.y);
+                const int k = std::clamp(
+                    int(std::ceil(len / std::max(1e-3f, radius))), 1, 4096);
+                for (int j = 1; j < k; ++j) {
+                    const float t = float(j) / float(k);
+                    dense.push_back(Pt{a.x + (b.x - a.x) * t,
+                                       a.y + (b.y - a.y) * t,
+                                       a.p + (b.p - a.p) * t});
+                }
+            }
+            pts.swap(dense);
+        }
+
         bool anyErased = false;
-        for (size_t i = 0; i < s.pts.size(); ++i) {
-            const float dx = s.pts[i].x - rx;
-            const float dy = s.pts[i].y - ry;
-            if (dx * dx + dy * dy <= rr) {
+        std::vector<char> keep(pts.size(), 1);
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (distSqToSegment(pts[i].x, pts[i].y, ax, ay, bx, by) <= rr) {
                 keep[i] = 0;
                 anyErased = true;
             }
@@ -252,13 +362,14 @@ Document::EraseResult Document::erasePartial(const QPointF& world, float radius)
                 seg.color = s.color;
                 seg.size = s.size;
                 seg.complete = s.complete;
-                seg.pts.assign(s.pts.begin() + ptrdiff_t(segStart),
-                               s.pts.begin() + ptrdiff_t(end));
+                seg.stabilized = s.stabilized;
+                seg.pts.assign(pts.begin() + ptrdiff_t(segStart),
+                               pts.begin() + ptrdiff_t(end));
                 segments.push_back(std::move(seg));
             }
             segStart = SIZE_MAX;
         };
-        for (size_t i = 0; i < s.pts.size(); ++i) {
+        for (size_t i = 0; i < pts.size(); ++i) {
             if (keep[i]) {
                 if (segStart == SIZE_MAX)
                     segStart = i;
@@ -266,15 +377,11 @@ Document::EraseResult Document::erasePartial(const QPointF& world, float radius)
                 flush(i);
             }
         }
-        flush(s.pts.size());
+        flush(pts.size());
 
         if (segments.empty()) {
             res.strokes.push_back(std::move(s));
             it = strokes_.erase(it);
-            continue;
-        }
-        if (segments.size() == 1 && segments.front().pts.size() == s.pts.size()) {
-            ++it;
             continue;
         }
         for (Stroke& seg : segments)
@@ -480,6 +587,9 @@ void Document::apply(const std::vector<Stroke>& list)
         if (Stroke* d = strokeById(s.id)) {
             d->pts = s.pts;
             d->color = s.color;
+            d->size = s.size;
+            d->complete = s.complete;
+            d->stabilized = s.stabilized;
             retessellate(*d);
         }
     }

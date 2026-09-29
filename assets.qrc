@@ -19,6 +19,11 @@
         <file alias="duplicate.png">assets/duplicate.png</file>
         <file alias="pencil-cursor.png">assets/pencil-cursor.png</file>
         <file alias="delete.png">assets/delete.png</file>
+        <file alias="trash.png">assets/trash.png</file>
+        <file alias="undo.png">assets/undo.png</file>
+        <file alias="redo.png">assets/redo.png</file>
+        <file alias="check.png">assets/check.png</file>
+        <file alias="check@2x.png">assets/check@2x.png</file>
         <file alias="fonts/Lexend-Variable.ttf">assets/fonts/Lexend-Variable.ttf</file>
     </qresource>
 </RCC>

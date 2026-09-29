@@ -10,6 +10,8 @@ struct PdfPage {
     DocumentData data;
 };
 
-bool exportPdf(const QString& path, const QVector<PdfPage>& pages, QString* error = nullptr);
+bool exportPdf(const QString& path, const QVector<PdfPage>& pages,
+               QString* error = nullptr, bool includeStaticGrid = false,
+               bool highlightBelow = true);
 
 }

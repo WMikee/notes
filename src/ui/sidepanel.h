@@ -30,11 +30,13 @@ public:
 
 signals:
     void clicked();
+    void doubleClicked();
     void moreClicked();
 
 protected:
     void paintEvent(QPaintEvent*) override;
     void mousePressEvent(QMouseEvent*) override;
+    void mouseDoubleClickEvent(QMouseEvent*) override;
     void enterEvent(QEnterEvent*) override;
     void leaveEvent(QEvent*) override;
 
@@ -86,6 +88,7 @@ public:
     void selectDefault();
     void selectNotebook(int index);
     void activatePage(int notebookIndex, int pageId);
+    void openTrash();
 
 signals:
     void selectionChanged();
@@ -106,7 +109,9 @@ private:
     QScrollArea* makeScrollArea(QWidget* content);
     void rememberSelection();
     void selectPage(int indexInList);
+    void updateRowSelection();
     void onRowClicked(bool isPage, int index);
+    void onRowDoubleClicked(bool isPage, int index);
     void onLibraryChanged();
     void duplicateItemById(bool isPage, int index);
     void removeItemById(bool isPage, int index);

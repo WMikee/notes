@@ -54,8 +54,8 @@ public:
         std::vector<Stroke> added;
         std::vector<ShapeItem> shapes;
     };
-    EraseResult eraseNear(const QPointF& world, float radius);
-    EraseResult erasePartial(const QPointF& world, float radius);
+    EraseResult eraseNear(const QPointF& from, const QPointF& to, float radius);
+    EraseResult erasePartial(const QPointF& from, const QPointF& to, float radius);
 
     void commitErase(EraseResult&& res);
     void commitAdd(std::vector<Stroke>&& added, std::vector<TextBox>&& addedTexts,

@@ -9,7 +9,8 @@ namespace notes {
 
 namespace {
 constexpr quint32 kMagic = 0x4E4F4454;
-constexpr quint32 kVersion = 6;
+constexpr quint32 kVersion = 7;
+constexpr quint32 kVersion6 = 6;
 constexpr quint32 kVersion5 = 5;
 constexpr quint32 kVersion4 = 4;
 constexpr quint32 kVersion3 = 3;
@@ -74,6 +75,7 @@ void serializeStroke(QDataStream& ds, const Stroke& s)
     ds << s.id;
     ds << s.color;
     ds << s.size;
+    ds << quint8(s.stabilized ? 1 : 0);
     ds << quint32(s.pts.size());
     for (const Pt& p : s.pts)
         ds << p.x << p.y << p.p;
@@ -86,6 +88,12 @@ bool deserializeStroke(QDataStream& ds, Stroke& s, quint32 version)
     ds >> s.color;
     s.size = kDefaultStrokeSize;
     if (version >= 4) ds >> s.size;
+    s.stabilized = true;
+    if (version >= 7) {
+        quint8 stabilized = 1;
+        ds >> stabilized;
+        s.stabilized = stabilized != 0;
+    }
     ds >> n;
     s.pts.clear();
     s.pts.reserve(n);
@@ -176,8 +184,9 @@ bool deserializeDocument(const QByteArray& bytes, DocumentData& out)
     ds.setVersion(QDataStream::Qt_6_2);
     quint32 magic = 0, version = 0;
     ds >> magic >> version;
-    if (magic != kMagic || (version != kVersion && version != kVersion5 && version != kVersion4
-        && version != kVersion3 && version != kVersion2 && version != kVersion1)
+    if (magic != kMagic || (version != kVersion && version != kVersion6 && version != kVersion5
+        && version != kVersion4 && version != kVersion3 && version != kVersion2
+        && version != kVersion1)
         || ds.status() != QDataStream::Ok)
         return false;
 

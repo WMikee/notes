@@ -1,11 +1,13 @@
 #include "ui/pagepicker.h"
 
 #include <QCoreApplication>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QPolygonF>
@@ -15,6 +17,7 @@
 #include <QStyle>
 #include <QVBoxLayout>
 
+#include "scene/page.h"
 #include "theme.h"
 
 namespace notes {
@@ -24,6 +27,8 @@ namespace {
 constexpr int kRowData = Qt::UserRole;
 constexpr int kPageIndexData = Qt::UserRole + 2;
 constexpr int kNotebookData = Qt::UserRole + 3;
+constexpr int kCollapsedData = Qt::UserRole + 4;
+constexpr int kArrowWidth = 22;
 
 class RowDelegate : public QStyledItemDelegate
 {
@@ -47,12 +52,29 @@ public:
             painter->fillRect(box.adjusted(1, 0, -1, 0), theme::kPanelRaised);
 
         if (isHeader) {
-            const int markW = 22;
-            const QRect mark(box.left() + 4, box.top(), markW, box.height());
+            const bool collapsed = index.data(kCollapsedData).toBool();
             painter->save();
+
+            const QRect arrow(box.left() + 2, box.top(), kArrowWidth, box.height());
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(theme::kTextDim);
+            const QPointF ac = arrow.center();
+            QPolygonF tri;
+            if (collapsed)
+                tri << QPointF(ac.x() - 3.0, ac.y() - 5.0)
+                    << QPointF(ac.x() + 4.0, ac.y())
+                    << QPointF(ac.x() - 3.0, ac.y() + 5.0);
+            else
+                tri << QPointF(ac.x() - 5.0, ac.y() - 3.0)
+                    << QPointF(ac.x() + 5.0, ac.y() - 3.0)
+                    << QPointF(ac.x(), ac.y() + 4.0);
+            painter->drawPolygon(tri);
+
+            const QRect mark(arrow.right() + 1, box.top(), 22, box.height());
             QPen pen(theme::kGrooveFill);
             pen.setWidthF(1.7);
             painter->setPen(pen);
+            painter->setBrush(Qt::NoBrush);
             const QPointF c = mark.center();
             if (index.data(Qt::CheckStateRole).toInt() == Qt::Checked) {
                 painter->drawPolyline(QPolygonF({QPointF(c.x() - 5.0, c.y()),
@@ -68,7 +90,7 @@ public:
             f.setPointSizeF(f.pointSizeF() - 0.5);
             painter->setFont(f);
             painter->setPen(theme::kTextDim);
-            painter->drawText(box.adjusted(markW + 8, 0, -6, 2), Qt::AlignVCenter | Qt::AlignLeft,
+            painter->drawText(box.adjusted(mark.right() + 8, 0, -6, 2), Qt::AlignVCenter | Qt::AlignLeft,
                               index.data(Qt::DisplayRole).toString());
             painter->setPen(theme::kOutline);
             painter->drawLine(box.left() + 4, box.bottom() - 1, box.right() - 4, box.bottom() - 1);
@@ -116,6 +138,12 @@ public:
         if (event->type() != QEvent::MouseButtonRelease || !owner_) return false;
         const QVariant nb = index.data(kNotebookData);
         if (nb.isValid()) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            const int lx = int(me->position().x()) - option.rect.left();
+            if (lx < kArrowWidth) {
+                owner_->toggleNotebookCollapsed(nb.toInt());
+                return true;
+            }
             const bool on = index.data(Qt::CheckStateRole).toInt() == Qt::Checked;
             owner_->setNotebookChecked(nb.toInt(), !on);
             return true;
@@ -154,6 +182,7 @@ PagePickerDialog::PagePickerDialog(const QVector<PageRef>& pages, QWidget* paren
     list_->setUniformItemSizes(false);
     list_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     list_->setSpacing(1);
+    list_->setMinimumHeight(320);
     root->addWidget(list_, 1);
 
     int number = 0;
@@ -169,6 +198,7 @@ PagePickerDialog::PagePickerDialog(const QVector<PageRef>& pages, QWidget* paren
                 header->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
                 header->setCheckState(Qt::Checked);
                 header->setData(kNotebookData, p.notebook);
+                header->setData(kCollapsedData, true);
                 header->setSizeHint(QSize(0, 28));
                 headerRows_.push_back(list_->count());
                 notebookOfHeader_.push_back(p.notebook);
@@ -185,6 +215,18 @@ PagePickerDialog::PagePickerDialog(const QVector<PageRef>& pages, QWidget* paren
         pageRows_.push_back(list_->count());
         list_->addItem(item);
     }
+
+    for (int nb : notebookOfHeader_)
+        for (int i = 0; i < pages_.size(); ++i)
+            if (pages_.at(i).notebook == nb)
+                list_->item(pageRows_.at(i))->setHidden(true);
+
+    gridOption_ = new QCheckBox(tr("Incluir cuadrícula estática (estilo cuaderno)"), this);
+    gridOption_->setObjectName("gridOption");
+    gridOption_->setCursor(Qt::PointingHandCursor);
+    gridOption_->setToolTip(
+        tr("Exporta una cuadrícula fija de %1 columnas por página").arg(kGridCellsAcross));
+    root->addWidget(gridOption_);
 
     auto* quick = new QHBoxLayout;
     quick->setSpacing(8);
@@ -226,6 +268,11 @@ PagePickerDialog::PagePickerDialog(const QVector<PageRef>& pages, QWidget* paren
         "QListWidget#pageList { background-color: %4; border: 1px solid %5; border-radius: 8px; }"
         "QListWidget#pageList::item { border-radius: 4px; }"
         "QListWidget#pageList::item:selected { background-color: %6; }"
+        "QCheckBox#gridOption { color: %2; spacing: 8px; }"
+        "QCheckBox#gridOption::indicator { width: 15px; height: 15px; border: 1px solid %5;"
+        " border-radius: 4px; background-color: transparent; }"
+        "QCheckBox#gridOption::indicator:checked { image: url(:/assets/check.png);"
+        " border: 1px solid %7; background-color: transparent; }"
         "QPushButton { background-color: %6; color: %2; border: 1px solid %5; border-radius: 7px;"
         " padding: 6px 16px; }"
         "QPushButton:hover { border-color: %7; }"
@@ -254,6 +301,11 @@ QVector<int> PagePickerDialog::selectedRows() const
     return out;
 }
 
+bool PagePickerDialog::includeStaticGrid() const
+{
+    return gridOption_ && gridOption_->isChecked();
+}
+
 int PagePickerDialog::checkedCount() const
 {
     return selectedRows().size();
@@ -271,6 +323,20 @@ void PagePickerDialog::setNotebookChecked(int notebook, bool on)
     updateNotebookStates();
     updating_ = false;
     updateSummary();
+}
+
+void PagePickerDialog::toggleNotebookCollapsed(int notebook)
+{
+    const int h = notebookOfHeader_.indexOf(notebook);
+    if (h < 0) return;
+    QListWidgetItem* header = list_->item(headerRows_.at(h));
+    const bool collapsed = !header->data(kCollapsedData).toBool();
+    header->setData(kCollapsedData, collapsed);
+    for (int i = 0; i < pages_.size(); ++i) {
+        if (pages_.at(i).notebook != notebook) continue;
+        list_->item(pageRows_.at(i))->setHidden(collapsed);
+    }
+    list_->viewport()->update();
 }
 
 void PagePickerDialog::updateNotebookStates()

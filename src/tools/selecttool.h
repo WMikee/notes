@@ -45,11 +45,11 @@ signals:
 private:
     void beginDrag(const QPointF& screen, ToolContext& ctx);
     void translate(const QPointF& deltaWorld, ToolContext& ctx);
-    void scale(const QPointF& world, ToolContext& ctx);
+    void scale(const QPointF& world, bool shift, ToolContext& ctx);
     void rotate(const QPointF& world, bool snap, ToolContext& ctx);
     void endMarquee(ToolContext& ctx);
     void commitDrag(ToolContext& ctx);
-    void collectSnapshots(const Document& doc);
+    void collectSnapshots(Document& doc);
     void forgetSnapshots();
     static void collect(const Document& doc, const QRectF& world, std::vector<int>& out);
 
@@ -59,6 +59,7 @@ private:
     bool boxValid_ = false;
     bool drag_ = false;
     bool marqueeActive_ = false;
+    bool marqueeAdd_ = false;
     QPointF marqueeAnchorWorld_;
     QRectF marqueeRect_;
     Handle handle_ = Handle::Move;
@@ -71,6 +72,12 @@ private:
     std::vector<TextBox> beforeTexts_;
     std::vector<ImageItem> beforeImages_;
     std::vector<ShapeItem> beforeShapes_;
+    std::vector<Stroke*> dragStrokes_;
+    std::vector<TextBox*> dragTexts_;
+    std::vector<ImageItem*> dragImages_;
+    std::vector<ShapeItem*> dragShapes_;
+    std::vector<QPointF> scratchPts_;
+    double appliedRot_ = 0.0;
     bool moved_ = false;
 };
 

@@ -45,6 +45,7 @@ void SelectTool::clear(ToolContext& ctx)
 void SelectTool::forget(int id)
 {
     selection_.erase(std::remove(selection_.begin(), selection_.end(), id), selection_.end());
+    boxValid_ = false;
 }
 
 void SelectTool::forgetSnapshots()
@@ -53,14 +54,37 @@ void SelectTool::forgetSnapshots()
     beforeTexts_.clear();
     beforeImages_.clear();
     beforeShapes_.clear();
+    dragStrokes_.clear();
+    dragTexts_.clear();
+    dragImages_.clear();
+    dragShapes_.clear();
 }
 
-void SelectTool::collectSnapshots(const Document& doc)
+void SelectTool::collectSnapshots(Document& doc)
 {
-    beforeStrokes_ = doc.snapshot(selection_);
-    beforeTexts_ = doc.textSnapshot(selection_);
-    beforeImages_ = doc.imageSnapshot(selection_);
-    beforeShapes_ = doc.shapeSnapshot(selection_);
+    forgetSnapshots();
+    for (int id : selection_) {
+        if (Stroke* s = doc.strokeById(id)) {
+            beforeStrokes_.push_back(*s);
+            beforeStrokes_.back().verts.clear();
+            dragStrokes_.push_back(s);
+            continue;
+        }
+        if (TextBox* t = doc.textById(id)) {
+            beforeTexts_.push_back(*t);
+            dragTexts_.push_back(t);
+            continue;
+        }
+        if (ImageItem* im = doc.imageById(id)) {
+            beforeImages_.push_back(*im);
+            dragImages_.push_back(im);
+            continue;
+        }
+        if (ShapeItem* sh = doc.shapeById(id)) {
+            beforeShapes_.push_back(*sh);
+            dragShapes_.push_back(sh);
+        }
+    }
 }
 
 void SelectTool::deleteSelected(ToolContext& ctx)
@@ -85,23 +109,49 @@ QRectF SelectTool::gizmoBox(ToolContext& ctx)
                 && doc.imageById(id) == nullptr && doc.shapeById(id) == nullptr;
         }),
         selection_.end());
+    if (selection_.empty()) return boxWorld_;
 
+    scratchPts_.clear();
 
-    std::vector<QPointF> pts, flat;
-    auto grow = [&pts, &flat](const QPointF& p) {
-        pts.push_back(p);
-        flat.push_back(p);
+    bool pFirst = true, fFirst = true;
+    double pMinX = 0, pMinY = 0, pMaxX = 0, pMaxY = 0;
+    double fMinX = 0, fMinY = 0, fMaxX = 0, fMaxY = 0;
+    const auto growP = [&](double x, double y) {
+        if (pFirst) {
+            pMinX = pMaxX = x;
+            pMinY = pMaxY = y;
+            pFirst = false;
+        } else {
+            pMinX = std::min(pMinX, x); pMaxX = std::max(pMaxX, x);
+            pMinY = std::min(pMinY, y); pMaxY = std::max(pMaxY, y);
+        }
     };
-    auto growRot = [&pts, &flat](const QRectF& r, const QPointF& anchor, double rot) {
+    const auto growF = [&](double x, double y) {
+        if (fFirst) {
+            fMinX = fMaxX = x;
+            fMinY = fMaxY = y;
+            fFirst = false;
+        } else {
+            fMinX = std::min(fMinX, x); fMaxX = std::max(fMaxX, x);
+            fMinY = std::min(fMinY, y); fMaxY = std::max(fMaxY, y);
+        }
+    };
+    const auto growRot = [&](const QRectF& r, const QPointF& anchor, double rot) {
         const QPointF c[4] = { r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft() };
         for (const QPointF& p : c) {
-            pts.push_back(rotateAbout(p, anchor, rot));
-            flat.push_back(p);
+            const QPointF w = rotateAbout(p, anchor, rot);
+            scratchPts_.push_back(w);
+            growP(w.x(), w.y());
+            growF(p.x(), p.y());
         }
     };
     for (int id : selection_) {
         if (const Stroke* s = doc.strokeById(id)) {
-            for (const Pt& p : s->pts) grow(QPointF(p.x, p.y));
+            for (const Pt& p : s->pts) {
+                scratchPts_.emplace_back(p.x, p.y);
+                growP(p.x, p.y);
+                growF(p.x, p.y);
+            }
         }
     }
     for (int id : selection_) {
@@ -118,17 +168,28 @@ QRectF SelectTool::gizmoBox(ToolContext& ctx)
         if (const ShapeItem* sh = doc.shapeById(id))
             growRot(sh->localRect(), sh->anchor(), sh->rot);
     }
-    if (pts.empty()) return boxWorld_;
+    if (pFirst || scratchPts_.empty()) return boxWorld_;
 
+    const QPointF pivot((fMinX + fMaxX) * 0.5, (fMinY + fMaxY) * 0.5);
+    const QPointF frameCenter((pMinX + pMaxX) * 0.5, (pMinY + pMaxY) * 0.5);
 
-    const QPointF pivot = boundsOfPoints(flat).center();
-    const QPointF frameCenter = boundsOfPoints(pts).center();
+    bool lFirst = true;
+    double lMinX = 0, lMinY = 0, lMaxX = 0, lMaxY = 0;
+    for (const QPointF& wp : scratchPts_) {
+        const QPointF lp = toLocal(wp, pivot, boxRot_);
+        if (lFirst) {
+            lMinX = lMaxX = lp.x();
+            lMinY = lMaxY = lp.y();
+            lFirst = false;
+        } else {
+            lMinX = std::min(lMinX, lp.x()); lMaxX = std::max(lMaxX, lp.x());
+            lMinY = std::min(lMinY, lp.y()); lMaxY = std::max(lMaxY, lp.y());
+        }
+    }
 
-    for (QPointF& p : pts) p = toLocal(p, pivot, boxRot_);
-    QRectF frame = boundsOfPoints(pts);
+    QRectF frame(QPointF(lMinX, lMinY), QPointF(lMaxX, lMaxY));
     frame.translate(-frame.center());
     frame.translate(frameCenter);
-
 
     boxWorld_ = frame;
     return boxWorld_;
@@ -167,6 +228,7 @@ void SelectTool::onPress(const InputPoint& p, ToolContext& ctx)
                 if (h == Handle::Rotate) {
                     handle_ = Handle::Rotate;
                     dragStartRot_ = boxRot_;
+                    appliedRot_ = 0.0;
                     dragAnchorWorld_ = b.center();
                     dragStartAngle_ = std::atan2(w.y() - b.center().y(),
                                                  w.x() - b.center().x());
@@ -202,6 +264,19 @@ void SelectTool::onPress(const InputPoint& p, ToolContext& ctx)
     if (hit < 0) hit = shapeAt(ctx.doc.shapes(), w, kClickTolPx / ctx.cam.zoom);
     if (hit < 0) hit = strokeAt(ctx.doc.strokes(), w, kClickTolPx / ctx.cam.zoom);
     if (hit >= 0) {
+        if (p.shift) {
+            const auto found = std::find(selection_.begin(), selection_.end(), hit);
+            if (found != selection_.end())
+                selection_.erase(found);
+            else
+                selection_.push_back(hit);
+            boxValid_ = false;
+            boxRot_ = selection_.size() == 1 ? rotationOf(ctx.doc, selection_.front()) : 0.0;
+            if (selection_.empty()) emit gizmoCleared();
+            else emit gizmoAppeared();
+            ctx.repaint();
+            return;
+        }
         if (std::find(selection_.begin(), selection_.end(), hit) == selection_.end())
             setSelection({ hit }, ctx.doc);
         beginDrag(p.pos, ctx);
@@ -211,6 +286,7 @@ void SelectTool::onPress(const InputPoint& p, ToolContext& ctx)
     drag_ = true;
     handle_ = Handle::None;
     marqueeActive_ = true;
+    marqueeAdd_ = p.shift;
     marqueeAnchorWorld_ = w;
     marqueeRect_ = QRectF(w, w);
     if (selection_.empty()) emit gizmoAppeared();
@@ -220,6 +296,7 @@ void SelectTool::beginDrag(const QPointF& screen, ToolContext& ctx)
 {
     handle_ = Handle::Move;
     dragLastScreen_ = screen;
+    if (!selection_.empty()) gizmoBox(ctx);
     collectSnapshots(ctx.doc);
     moved_ = false;
     drag_ = true;
@@ -246,7 +323,7 @@ void SelectTool::onMove(const InputPoint& p, ToolContext& ctx)
         moved_ = true;
         return;
     }
-    scale(ctx.cam.toWorld(p.pos), ctx);
+    scale(ctx.cam.toWorld(p.pos), p.shift, ctx);
     moved_ = true;
 }
 
@@ -271,20 +348,27 @@ void SelectTool::endMarquee(ToolContext& ctx)
 {
     handle_ = Handle::Move;
     marqueeActive_ = false;
+    const bool add = marqueeAdd_;
+    marqueeAdd_ = false;
     const QRectF r = marqueeRect_;
     marqueeRect_ = QRectF();
     if (r.isNull()) {
-        clear(ctx);
+        if (!add) clear(ctx);
         return;
     }
     const double pw = r.width() * ctx.cam.zoom, ph = r.height() * ctx.cam.zoom;
     if (pw < 5 && ph < 5) {
-        clear(ctx);
+        if (!add) clear(ctx);
         return;
     }
     std::vector<int> ids;
     collect(ctx.doc, r, ids);
-    if (ids.empty()) {
+    if (add) {
+        ids.insert(ids.end(), selection_.begin(), selection_.end());
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        if (ids.empty()) return;
+    } else if (ids.empty()) {
         clear(ctx);
         return;
     }
@@ -310,33 +394,31 @@ void SelectTool::commitDrag(ToolContext& ctx)
 
 void SelectTool::translate(const QPointF& deltaWorld, ToolContext& ctx)
 {
-    Document& doc = ctx.doc;
-    for (int id : selection_) {
-        Stroke* s = doc.strokeById(id);
-        if (s) {
-            for (Pt& p : s->pts) {
-                p.x += float(deltaWorld.x());
-                p.y += float(deltaWorld.y());
-            }
+    const float dx = float(deltaWorld.x());
+    const float dy = float(deltaWorld.y());
+    for (Stroke* s : dragStrokes_) {
+        for (Pt& p : s->pts) {
+            p.x += dx;
+            p.y += dy;
+        }
+        if (s->verts.empty()) {
             retessellate(*s);
-            continue;
+        } else {
+            for (size_t i = 0; i + 1 < s->verts.size(); i += 6) {
+                s->verts[i] += dx;
+                s->verts[i + 1] += dy;
+            }
         }
-        TextBox* t = doc.textById(id);
-        if (t) {
-            t->pos += deltaWorld;
-            t->layoutDirty = true;
-            continue;
-        }
-        ImageItem* im = doc.imageById(id);
-        if (im) {
-            im->pos += deltaWorld;
-            continue;
-        }
-        ShapeItem* sh = doc.shapeById(id);
-        if (sh)
-            sh->rect.translate(deltaWorld);
     }
-    boxValid_ = false;
+    for (TextBox* t : dragTexts_) {
+        t->pos += deltaWorld;
+        t->layoutDirty = true;
+    }
+    for (ImageItem* im : dragImages_)
+        im->pos += deltaWorld;
+    for (ShapeItem* sh : dragShapes_)
+        sh->rect.translate(deltaWorld);
+    if (boxValid_) boxWorld_.translate(deltaWorld);
     ctx.invalidate();
 }
 
@@ -348,50 +430,52 @@ void SelectTool::rotate(const QPointF& w, bool snap, ToolContext& ctx)
         const double total = dragStartRot_ + d;
         d = std::round(total / kSnapAngle) * kSnapAngle - dragStartRot_;
     }
-    if (std::abs(d) < 1e-9) return;
+    const double dd = d - appliedRot_;
+    if (std::abs(dd) < 1e-9) return;
+    appliedRot_ = d;
     boxRot_ = dragStartRot_ + d;
 
-
-    const auto movedAnchor = [c, d](const QPointF& anchor) {
-        return rotateAbout(anchor, c, d);
+    const double s = std::sin(dd), co = std::cos(dd);
+    const auto rotPt = [c, s, co](const QPointF& p) {
+        const double px = p.x() - c.x(), py = p.y() - c.y();
+        return QPointF(c.x() + px * co - py * s, c.y() + px * s + py * co);
     };
 
-    Document& doc = ctx.doc;
-    for (const Stroke& orig : beforeStrokes_) {
-        Stroke* st = doc.strokeById(orig.id);
-        if (!st) continue;
-        for (size_t i = 0; i < st->pts.size() && i < orig.pts.size(); ++i) {
-            const QPointF np = rotateAbout(QPointF(orig.pts[i].x, orig.pts[i].y), c, d);
-            st->pts[i].x = float(np.x());
-            st->pts[i].y = float(np.y());
+    for (Stroke* st : dragStrokes_) {
+        for (Pt& p : st->pts) {
+            const QPointF np = rotPt(QPointF(p.x, p.y));
+            p.x = float(np.x());
+            p.y = float(np.y());
         }
-        retessellate(*st);
+        if (st->verts.empty()) {
+            retessellate(*st);
+        } else {
+            for (size_t i = 0; i + 1 < st->verts.size(); i += 6) {
+                const QPointF np = rotPt(QPointF(st->verts[i], st->verts[i + 1]));
+                st->verts[i] = float(np.x());
+                st->verts[i + 1] = float(np.y());
+            }
+        }
     }
-    for (const TextBox& orig : beforeTexts_) {
-        TextBox* t = doc.textById(orig.id);
-        if (!t) continue;
-        t->pos = movedAnchor(orig.anchor());
-        t->rot = orig.rot + d;
+    for (TextBox* t : dragTexts_) {
+        t->pos = rotPt(t->pos);
+        t->rot += dd;
         t->layoutDirty = true;
     }
-    for (const ImageItem& orig : beforeImages_) {
-        ImageItem* im = doc.imageById(orig.id);
-        if (!im) continue;
-        im->pos = movedAnchor(orig.anchor());
-        im->rot = orig.rot + d;
+    for (ImageItem* im : dragImages_) {
+        im->pos = rotPt(im->pos);
+        im->rot += dd;
     }
-    for (const ShapeItem& orig : beforeShapes_) {
-        ShapeItem* sh = doc.shapeById(orig.id);
-        if (!sh) continue;
-        sh->rect = QRectF(movedAnchor(orig.anchor()), orig.localRect().size());
-        sh->rot = orig.rot + d;
+    for (ShapeItem* sh : dragShapes_) {
+        sh->rect = QRectF(rotPt(sh->anchor()), sh->localRect().size());
+        sh->rot += dd;
     }
     boxValid_ = false;
     ctx.invalidate();
     ctx.repaint();
 }
 
-void SelectTool::scale(const QPointF& w, ToolContext& ctx)
+void SelectTool::scale(const QPointF& w, bool shift, ToolContext& ctx)
 {
     const QRectF b = dragStartWorld_;
     if (b.width() < 1e-9 || b.height() < 1e-9) return;
@@ -419,6 +503,14 @@ void SelectTool::scale(const QPointF& w, ToolContext& ctx)
     if (sx < kMin) sx = kMin;
     if (sy < kMin) sy = kMin;
 
+    if (shift) {
+        switch (handle_) {
+        case Handle::E: case Handle::W: sy = sx; break;
+        case Handle::N: case Handle::S: sx = sy; break;
+        default: sx = sy = std::max(sx, sy); break;
+        }
+    }
+
     double k;
     switch (handle_) {
     case Handle::E: case Handle::W: k = std::fabs(sx); break;
@@ -434,23 +526,21 @@ void SelectTool::scale(const QPointF& w, ToolContext& ctx)
                                pivot.y() + (local.y() - pivot.y()) * sy), pivot, rot);
     };
 
-    Document& doc = ctx.doc;
-    for (const Stroke& orig : beforeStrokes_) {
-        Stroke* s = doc.strokeById(orig.id);
-        if (!s) continue;
-        for (size_t i = 0; i < s->pts.size() && i < orig.pts.size(); ++i) {
-            const QPointF np = applyScale(QPointF(orig.pts[i].x, orig.pts[i].y));
-            s->pts[i].x = float(np.x());
-            s->pts[i].y = float(np.y());
+    for (size_t i = 0; i < dragStrokes_.size(); ++i) {
+        Stroke* s = dragStrokes_[i];
+        const Stroke& orig = beforeStrokes_[i];
+        for (size_t j = 0; j < s->pts.size() && j < orig.pts.size(); ++j) {
+            const QPointF np = applyScale(QPointF(orig.pts[j].x, orig.pts[j].y));
+            s->pts[j].x = float(np.x());
+            s->pts[j].y = float(np.y());
         }
         s->size = float(orig.size * k);
         retessellate(*s);
     }
 
-
-    for (const TextBox& orig : beforeTexts_) {
-        TextBox* t = doc.textById(orig.id);
-        if (!t) continue;
+    for (size_t i = 0; i < dragTexts_.size(); ++i) {
+        TextBox* t = dragTexts_[i];
+        const TextBox& orig = beforeTexts_[i];
         t->pos = applyScale(orig.anchor());
         t->width = orig.width * std::fabs(sx);
         t->fontPx = orig.fontPx * std::fabs(sy);
@@ -458,17 +548,17 @@ void SelectTool::scale(const QPointF& w, ToolContext& ctx)
         t->color = orig.color;
         t->layoutDirty = true;
     }
-    for (const ImageItem& orig : beforeImages_) {
-        ImageItem* im = doc.imageById(orig.id);
-        if (!im) continue;
+    for (size_t i = 0; i < dragImages_.size(); ++i) {
+        ImageItem* im = dragImages_[i];
+        const ImageItem& orig = beforeImages_[i];
         im->pos = applyScale(orig.anchor());
         im->width = orig.width * std::fabs(sx);
         im->height = orig.height * std::fabs(sy);
         im->rot = orig.rot;
     }
-    for (const ShapeItem& orig : beforeShapes_) {
-        ShapeItem* sh = doc.shapeById(orig.id);
-        if (!sh) continue;
+    for (size_t i = 0; i < dragShapes_.size(); ++i) {
+        ShapeItem* sh = dragShapes_[i];
+        const ShapeItem& orig = beforeShapes_[i];
         const QSizeF os = orig.localRect().size();
         sh->rect = QRectF(applyScale(orig.anchor()),
                           QSizeF(os.width() * sx, os.height() * sy));

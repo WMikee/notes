@@ -106,9 +106,6 @@ QPainterPath strokePath(const StrokeOutline& o, double tol)
         path.closeSubpath();
     };
 
-    // El cuerpo es un unico poligono cerrado: lado izquierdo seguido del lado
-    // derecho en orden inverso. Simplificamos cada mitad por separado (asi los
-    // extremos que unen con las tapas se conservan) y rearmamos el poligono.
     if (o.body.size() >= 4 && o.body.size() % 2 == 0) {
         const size_t half = o.body.size() / 2;
         std::vector<QPointF> body(o.body.begin(), o.body.begin() + ptrdiff_t(half));

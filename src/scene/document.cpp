@@ -312,9 +312,6 @@ Document::EraseResult Document::erasePartial(const QPointF& from, const QPointF&
     for (auto it = strokes_.begin(); it != strokes_.end();) {
         Stroke& s = *it;
 
-        // A straight line is stored as just two points, so testing only the
-        // vertices never reaches its middle. Subdivide every segment that
-        // comes within the eraser radius before deciding what to keep.
         std::vector<Pt> pts = s.pts;
         {
             std::vector<Pt> dense;

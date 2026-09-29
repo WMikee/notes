@@ -87,6 +87,8 @@ private:
     QCheckBox* pressureBox_ = nullptr;
     QLabel* stabilizerLabel_ = nullptr;
     QCheckBox* stabilizerBox_ = nullptr;
+    QLabel* smoothLabel_ = nullptr;
+    QCheckBox* smoothBox_ = nullptr;
     QLabel* highlightLabel_ = nullptr;
     QCheckBox* highlightBox_ = nullptr;
     notes::SizeNumberField* sizeChoice_ = nullptr;

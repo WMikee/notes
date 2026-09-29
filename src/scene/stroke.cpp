@@ -517,6 +517,43 @@ void retessellate(Stroke& st)
     tessellateImpl(st.pts, st.color, opt, st.verts);
 }
 
+void smoothStrokePoints(std::vector<Pt>& pts)
+{
+    const int n = int(pts.size());
+    if (n < 3) return;
+
+    constexpr float kCornerAngle = 1.0f;
+    constexpr float kLambda = 0.3f;
+    constexpr int kIterations = 2;
+    constexpr int kSkipEnds = 1;
+
+    std::vector<Vec2> cur(n), next(n);
+    for (int i = 0; i < n; ++i)
+        cur[i] = Vec2{pts[i].x, pts[i].y};
+
+    for (int it = 0; it < kIterations; ++it) {
+        next = cur;
+        for (int i = kSkipEnds; i + kSkipEnds < n; ++i) {
+            const Vec2 a = cur[i - 1], b = cur[i], c = cur[i + 1];
+            const Vec2 v1 = vSub(b, a), v2 = vSub(c, b);
+            const float l1 = vLen(v1), l2 = vLen(v2);
+            if (l1 < 1e-6f || l2 < 1e-6f) continue;
+            const float dot = std::clamp(vDot(v1, v2) / (l1 * l2), -1.0f, 1.0f);
+            const float turn = std::acos(dot);
+            if (turn >= kCornerAngle) continue;
+            const float weight = 1.0f - turn / kCornerAngle;
+            const Vec2 avg = vMul(vAdd(a, c), 0.5f);
+            next[i] = vLrp(b, avg, kLambda * weight);
+        }
+        cur.swap(next);
+    }
+
+    for (int i = 0; i < n; ++i) {
+        pts[i].x = cur[i].x;
+        pts[i].y = cur[i].y;
+    }
+}
+
 namespace {
 
 std::vector<QPointF> toPoints(const std::vector<Vec2>& v)

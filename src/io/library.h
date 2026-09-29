@@ -74,6 +74,8 @@ public:
     void setSavedPressure(bool on);
     bool savedStabilizer() const { return savedStabilizer_; }
     void setSavedStabilizer(bool on);
+    bool savedPostSmooth() const { return savedPostSmooth_; }
+    void setSavedPostSmooth(bool on);
     bool savedFixedGrid() const { return savedFixedGrid_; }
     void setSavedFixedGrid(bool on);
     bool savedHighlightBelow() const { return savedHighlightBelow_; }
@@ -120,6 +122,7 @@ private:
     QHash<QString, int> toolSizes_;
     bool savedPressure_ = true;
     bool savedStabilizer_ = true;
+    bool savedPostSmooth_ = false;
     bool savedFixedGrid_ = false;
     bool savedHighlightBelow_ = true;
     QString path_;

@@ -32,6 +32,8 @@ struct StrokeOutline {
 void tessellate(const std::vector<Pt>& pts, const QColor& color, std::vector<float>& out);
 void retessellate(Stroke& s);
 
+void smoothStrokePoints(std::vector<Pt>& pts);
+
 StrokeOutline strokeOutline(const Stroke& s, int capSegments = kOutlineCapSegments,
                             int cornerSegments = kOutlineCornerSegments);
 

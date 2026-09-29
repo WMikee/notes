@@ -79,6 +79,7 @@ bool Library::loadDocument(const QString& path)
     savedSize_ = qBound(kMinSize, ui.value("size").toInt(savedSize_), kMaxSize);
     savedPressure_ = ui.value("pressure").toBool(savedPressure_);
     savedStabilizer_ = ui.value("stabilizer").toBool(savedStabilizer_);
+    savedPostSmooth_ = ui.value("postSmooth").toBool(savedPostSmooth_);
     savedFixedGrid_ = ui.value("fixedGrid").toBool(savedFixedGrid_);
     savedHighlightBelow_ = ui.value("highlightBelow").toBool(savedHighlightBelow_);
     const QJsonObject sizes = ui.value("sizes").toObject();
@@ -177,6 +178,7 @@ void Library::saveNow()
     ui["sizes"] = sizes;
     ui["pressure"] = savedPressure_;
     ui["stabilizer"] = savedStabilizer_;
+    ui["postSmooth"] = savedPostSmooth_;
     ui["fixedGrid"] = savedFixedGrid_;
     ui["highlightBelow"] = savedHighlightBelow_;
     root["uiState"] = ui;
@@ -377,6 +379,13 @@ void Library::setSavedStabilizer(bool on)
 {
     if (on == savedStabilizer_) return;
     savedStabilizer_ = on;
+    scheduleSave();
+}
+
+void Library::setSavedPostSmooth(bool on)
+{
+    if (on == savedPostSmooth_) return;
+    savedPostSmooth_ = on;
     scheduleSave();
 }
 

@@ -16,6 +16,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPalette>
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScreen>
@@ -261,6 +262,8 @@ SidePanel::SidePanel(Library* library, QWidget* parent)
                        "background: transparent; }"
                        "QFrame#sideDivider { background-color: rgba(255,255,255,14%); border: none; }"
                        "QScrollArea { background: transparent; border: none; }"
+                       "QScrollArea > QWidget > QWidget { background: transparent; }"
+                       "QScrollArea > QWidget#qt_scrollarea_viewport { background: transparent; }"
                        "QScrollBar:vertical { background: transparent; width: 4px; margin: 0; }"
                        "QScrollBar::handle:vertical { background: rgba(255,255,255,25%); "
                        "border-radius: 2px; min-height: 20px; }"
@@ -421,6 +424,13 @@ QScrollArea* SidePanel::makeScrollArea(QWidget* content)
     scroll->setFocusPolicy(Qt::NoFocus);
     scroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     scroll->setWidget(content);
+
+    scroll->viewport()->setAutoFillBackground(false);
+    QPalette pal = scroll->viewport()->palette();
+    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Window, Qt::transparent);
+    scroll->viewport()->setPalette(pal);
+    content->setAutoFillBackground(false);
     return scroll;
 }
 

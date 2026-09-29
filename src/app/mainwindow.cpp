@@ -619,6 +619,24 @@ void NotesWindow::buildNavPanel()
 
     toolsLayout->addSpacing(10);
 
+    smoothLabel_ = makeNavLabel(toolOptions_, toolsLayout, QStringLiteral("Smooth"));
+
+    smoothBox_ = new QCheckBox(toolOptions_);
+    smoothBox_->setObjectName("smoothBox");
+    smoothBox_->setToolTip("Suavizado posterior del trazo (conserva las esquinas)");
+    smoothBox_->setFocusPolicy(Qt::NoFocus);
+    smoothBox_->setCursor(Qt::PointingHandCursor);
+    smoothBox_->setChecked(library_->savedPostSmooth());
+    smoothBox_->setFixedHeight(kNavRowHeight);
+    smoothBox_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    toolsLayout->addWidget(smoothBox_, 0, Qt::AlignVCenter);
+    connect(smoothBox_, &QCheckBox::toggled, this, [this](bool on) {
+        canvas_->setPostSmoothEnabled(on);
+        if (library_) library_->setSavedPostSmooth(on);
+    });
+
+    toolsLayout->addSpacing(10);
+
     highlightLabel_ = makeNavLabel(toolOptions_, toolsLayout, QStringLiteral("Below"));
 
     highlightBox_ = new QCheckBox(toolOptions_);
@@ -738,6 +756,14 @@ void NotesWindow::syncToolOptions()
             stabilizerBox_->setVisible(stabilizerVisible);
         }
         canvas_->setStabilizerEnabled(!stabilizerBox_ || stabilizerBox_->isChecked());
+
+        if (smoothLabel_) smoothLabel_->setVisible(stabilizerVisible);
+        if (smoothBox_) {
+            const QSignalBlocker blocker(smoothBox_);
+            smoothBox_->setChecked(library_ ? library_->savedPostSmooth() : false);
+            smoothBox_->setVisible(stabilizerVisible);
+        }
+        canvas_->setPostSmoothEnabled(!smoothBox_ || smoothBox_->isChecked());
 
         const bool highlightOrderVisible = toolUsesHighlightOrder(currentToolId_);
         if (highlightLabel_) highlightLabel_->setVisible(highlightOrderVisible);

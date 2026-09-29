@@ -630,6 +630,7 @@ void Document::applyShape(const std::vector<ShapeItem>& list)
         d->color = sh.color;
         d->penWidth = sh.penWidth;
         d->rot = sh.rot;
+        d->nodes = sh.nodes;
     }
 }
 

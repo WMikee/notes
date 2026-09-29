@@ -128,6 +128,11 @@ void Canvas::setStabilizerEnabled(bool on)
     stabilizerEnabled_ = on;
 }
 
+void Canvas::setPostSmoothEnabled(bool on)
+{
+    postSmoothEnabled_ = on;
+}
+
 void Canvas::setHighlightBelow(bool on)
 {
     if (highlightBelow_ == on) return;
@@ -777,6 +782,8 @@ void Canvas::endStroke()
     if (!drawing_) return;
     drawing_ = false;
     if (!cur_.pts.empty()) {
+        if (postSmoothEnabled_)
+            smoothStrokePoints(cur_.pts);
         cur_.complete = true;
         retessellate(cur_);
         doc_.add(cur_);

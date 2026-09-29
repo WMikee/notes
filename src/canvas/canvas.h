@@ -40,6 +40,7 @@ public:
     void setFixedGrid(bool on);
     void setPressureEnabled(bool on);
     void setStabilizerEnabled(bool on);
+    void setPostSmoothEnabled(bool on);
     void setHighlightBelow(bool on);
     void setStrokeSize(float size);
     void setEraserRadius(float radius);
@@ -150,6 +151,7 @@ private:
     QColor color_ = QColor(0.08f, 0.08f, 0.10f);
     bool pressureEnabled_ = true;
     bool stabilizerEnabled_ = true;
+    bool postSmoothEnabled_ = false;
     bool highlightBelow_ = true;
     float size_ = kDefaultStrokeSize;
     float fontSize_ = 16.0f;

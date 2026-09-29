@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QGuiApplication>
 #include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLShaderProgram>
 #include <QPainter>
@@ -15,9 +16,6 @@
 #include <cmath>
 
 
-extern "C" void glBlendFuncSeparate(GLenum sfactorRGB, GLenum dfactorRGB,
-                                    GLenum sfactorAlpha, GLenum dfactorAlpha);
-
 namespace notes {
 
 namespace {
@@ -25,7 +23,8 @@ namespace {
 
 inline void blendOver()
 {
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+    QOpenGLFunctions* f = QOpenGLContext::currentContext()->functions();
+    f->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
 }
 
 constexpr float kEraseLife = 0.6f;
